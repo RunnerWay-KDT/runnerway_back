@@ -1,0 +1,184 @@
+# ============================================
+# .gitignore - Git에서 무시할 파일 목록
+# ============================================
+# 이 파일에 지정된 파일/폴더는 Git에 커밋되지 않습니다.
+# 민감한 정보, 임시 파일, 생성된 파일 등을 여기에 추가합니다.
+# ============================================
+
+# --------------------------------------------
+# 환경 변수 및 설정 파일 (중요!)
+# --------------------------------------------
+# .env 파일에는 데이터베이스 비밀번호, API 키 등이 들어있습니다.
+# 절대 Git에 올리면 안 됩니다!
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# --------------------------------------------
+# Python 관련
+# --------------------------------------------
+# 바이트 코드 (컴파일된 Python 파일)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 빌드 관련
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# 가상환경
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# --------------------------------------------
+# IDE 및 에디터 관련
+# --------------------------------------------
+# VSCode
+.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# --------------------------------------------
+# 운영체제 관련
+# --------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# --------------------------------------------
+# 테스트 및 커버리지
+# --------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --------------------------------------------
+# 로그 파일
+# --------------------------------------------
+*.log
+logs/
+*.log.*
+
+# --------------------------------------------
+# 데이터베이스
+# --------------------------------------------
+# SQLite (개발용 로컬 DB)
+*.db
+*.sqlite
+*.sqlite3
+
+# --------------------------------------------
+# Jupyter Notebook
+# --------------------------------------------
+.ipynb_checkpoints/
+*.ipynb
+
+# --------------------------------------------
+# 기타
+# --------------------------------------------
+# 임시 파일
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# 업로드 파일 (프로덕션에서는 S3 등 사용)
+uploads/
+media/
+static/uploaded/
+
+# 캐시
+.cache/
+*.cache
+
+# mypy (타입 체크)
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre (타입 체크)
+.pyre/
+
+# Celery (백그라운드 작업)
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# --------------------------------------------
+# 프로젝트별 추가
+# --------------------------------------------
+# 테스트 데이터
+test_data/
+tmp/
+
+# 문서 생성 (Sphinx 등)
+docs/_build/
+
+# 백업 파일
+*.backup
+backup/
