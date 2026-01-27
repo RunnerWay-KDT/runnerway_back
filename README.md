@@ -103,7 +103,7 @@ python scripts/seed_data.py
 
 ```bash
 # 개발 모드 (코드 변경 시 자동 재시작)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
 ### 6. API 문서 확인
