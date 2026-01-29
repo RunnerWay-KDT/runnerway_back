@@ -20,19 +20,13 @@ class SignupRequest(BaseModel):
     [필드 설명]
     - email: 이메일 (로그인 ID로 사용)
     - password: 비밀번호 (6자 이상)
-    - name: 사용자 이름 (1자 이상)
-    
-    [신입 개발자를 위한 팁]
-    - EmailStr: Pydantic이 자동으로 이메일 형식 검증
-    - Field(): 필드의 제약조건을 설정
-    - min_length: 최소 길이 제한
+    - name: 사용자 이름 (2자 이상)
     """
     email: EmailStr = Field(..., description="이메일 주소")
     password: str = Field(..., min_length=6, description="비밀번호 (6자 이상)")
-    name: str = Field(..., min_length=1, max_length=100, description="사용자 이름")
+    name: str = Field(..., min_length=2, max_length=100, description="사용자 이름 (최소 2자)")
     
     class Config:
-        # API 문서에 표시될 예시 데이터
         json_schema_extra = {
             "example": {
                 "email": "user@example.com",
@@ -54,46 +48,6 @@ class LoginRequest(BaseModel):
             "example": {
                 "email": "user@example.com",
                 "password": "password123"
-            }
-        }
-
-
-class KakaoProfile(BaseModel):
-    """
-    카카오 프로필 정보 스키마
-    
-    카카오 SDK에서 받은 사용자 프로필 정보입니다.
-    """
-    id: str = Field(..., description="카카오 사용자 ID")
-    email: Optional[str] = Field(None, description="이메일 (동의한 경우)")
-    nickname: str = Field(..., description="닉네임")
-    profile_image: Optional[str] = Field(None, description="프로필 이미지 URL")
-
-
-class KakaoLoginRequest(BaseModel):
-    """
-    카카오 소셜 로그인 요청 스키마
-    
-    [신입 개발자를 위한 팁]
-    - 프론트엔드에서 카카오 SDK로 로그인 후
-    - access_token과 profile 정보를 백엔드로 전송
-    - 백엔드에서 토큰 검증 후 회원가입/로그인 처리
-    """
-    provider: str = Field("kakao", description="소셜 로그인 제공자")
-    access_token: str = Field(..., description="카카오 SDK에서 받은 액세스 토큰")
-    profile: KakaoProfile = Field(..., description="카카오 프로필 정보")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "provider": "kakao",
-                "access_token": "카카오_액세스_토큰",
-                "profile": {
-                    "id": "1234567890",
-                    "email": "user@kakao.com",
-                    "nickname": "카카오사용자",
-                    "profile_image": "https://k.kakaocdn.net/..."
-                }
             }
         }
 
@@ -138,8 +92,7 @@ class UserSchema(BaseModel):
     id: str = Field(..., description="사용자 ID")
     email: str = Field(..., description="이메일")
     name: str = Field(..., description="이름")
-    avatar: Optional[str] = Field(None, description="프로필 이미지 URL")
-    provider: Optional[str] = Field(None, description="소셜 로그인 제공자")
+    avatar_url: Optional[str] = Field(None, description="프로필 이미지 URL")
     stats: Optional[UserStatsSchema] = Field(None, description="사용자 통계")
     created_at: Optional[datetime] = Field(None, description="가입일")
     
@@ -165,7 +118,7 @@ class AuthResponseData(BaseModel):
     """
     user: UserSchema
     tokens: TokensSchema
-    is_new_user: Optional[bool] = Field(None, description="신규 가입 여부 (소셜 로그인)")
+    is_new_user: Optional[bool] = Field(None, description="신규 가입 여부")
 
 
 class AuthResponse(BaseModel):
@@ -200,3 +153,4 @@ class LogoutResponse(BaseModel):
     """
     success: bool = True
     message: str = "로그아웃되었습니다"
+    data: Optional[dict] = None

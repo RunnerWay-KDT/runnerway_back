@@ -26,34 +26,27 @@ from app.models.user import (
     UserStats,
     UserSettings,
     EmergencyContact,
-    Badge,
-    UserBadge,
     RefreshToken
 )
 from app.models.route import (
     RouteShape,
     Route,
     RouteOption,
-    RouteWaypoint,
     SavedRoute,
     RouteGenerationTask,
     Place,
-    NearbyPlace,
     RecommendedRoute
 )
 from app.models.workout import (
     Workout,
-    WorkoutSplit,
-    WorkoutTrack,
-    WorkoutAchievement
+    WorkoutSplit
 )
 from app.models.community import (
     Post,
     PostLike,
     PostBookmark,
     Comment,
-    CommentLike,
-    Follow
+    CommentLike
 )
 
 # 외부에서 import할 수 있는 모델 목록
@@ -63,29 +56,22 @@ __all__ = [
     "UserStats",
     "UserSettings",
     "EmergencyContact",
-    "Badge",
-    "UserBadge",
     "RefreshToken",
     # Route 관련
     "RouteShape",
     "Route",
     "RouteOption",
-    "RouteWaypoint",
     "SavedRoute",
     "RouteGenerationTask",
     "Place",
-    "NearbyPlace",
     "RecommendedRoute",
     # Workout 관련
     "Workout",
     "WorkoutSplit",
-    "WorkoutTrack",
-    "WorkoutAchievement",
     # Community 관련
     "Post",
     "PostLike",
     "PostBookmark",
     "Comment",
-    "CommentLike",
-    "Follow"
+    "CommentLike"
 ]

@@ -14,7 +14,7 @@ from datetime import datetime
 from app.db.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User, UserStats
-from app.models.workout import Workout, WorkoutTrack, WorkoutSplit, WorkoutAchievement
+from app.models.workout import Workout, WorkoutSplit
 from app.models.route import RouteOption
 from app.schemas.workout import (
     WorkoutStartRequest, WorkoutStartResponse, WorkoutStartResponseWrapper,
@@ -22,7 +22,7 @@ from app.schemas.workout import (
     WorkoutCompleteRequest, WorkoutCompleteResponse, WorkoutCompleteResponseWrapper,
     WorkoutDetailResponse, WorkoutDetailResponseWrapper,
     WorkoutDeleteResponse,
-    WorkoutSummarySchema, WorkoutSplitSchema, AchievementSchema
+    WorkoutSummarySchema, WorkoutSplitSchema
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
@@ -76,9 +76,6 @@ def start_workout(
     # 경로 옵션 정보 조회 (선택된 경우)
     route_option = None
     route_name = None
-    shape_id = None
-    shape_name = None
-    shape_icon = None
     
     if request.option_id:
         route_option = db.query(RouteOption).filter(
@@ -87,21 +84,15 @@ def start_workout(
         
         if route_option and route_option.route:
             route_name = route_option.route.name
-            if route_option.route.shape:
-                shape_id = route_option.route.shape.id
-                shape_name = route_option.route.shape.name
-                shape_icon = route_option.route.shape.icon_name
     
     # 운동 세션 생성
     workout = Workout(
         user_id=current_user.id,
         type=request.type,
+        mode=request.mode if hasattr(request, 'mode') else None,
         route_id=request.route_id,
         route_option_id=request.option_id,
         route_name=route_name,
-        shape_id=shape_id,
-        shape_name=shape_name,
-        shape_icon=shape_icon,
         status="active",
         started_at=datetime.utcnow()
     )
@@ -118,9 +109,6 @@ def start_workout(
             started_at=workout.started_at,
             route_info={
                 "name": route_name,
-                "shape_id": shape_id,
-                "shape_name": shape_name,
-                "shape_icon": shape_icon,
                 "target_distance": float(route_option.distance) if route_option else None
             } if route_option else None
         ),
@@ -176,18 +164,18 @@ def track_workout(
             field="status"
         )
     
-    # 좌표 데이터 저장
+    # 좌표 데이터 저장 (path_data JSON 필드에 저장)
     if request and request.coordinates:
+        existing_path = workout.path_data or {"coordinates": []}
         for coord in request.coordinates:
-            track = WorkoutTrack(
-                workout_id=workout_id,
-                latitude=coord.lat,
-                longitude=coord.lng,
-                altitude=coord.altitude,
-                speed=coord.speed,
-                timestamp=coord.timestamp or datetime.utcnow()
-            )
-            db.add(track)
+            existing_path["coordinates"].append({
+                "lat": coord.lat,
+                "lng": coord.lng,
+                "altitude": coord.altitude,
+                "speed": coord.speed,
+                "timestamp": (coord.timestamp or datetime.utcnow()).isoformat()
+            })
+        workout.path_data = existing_path
     
     # 운동 현황 업데이트
     if request:
@@ -396,23 +384,19 @@ def complete_workout(
     if stats:
         stats.total_distance += float(workout.distance) if workout.distance else 0
         stats.total_workouts += 1
-        stats.total_calories += workout.calories or 0
-        stats.total_duration += workout.duration or 0
+        if workout.status == "completed":
+            stats.completed_routes += 1
     else:
         # 통계가 없으면 생성
         stats = UserStats(
             user_id=current_user.id,
             total_distance=float(workout.distance) if workout.distance else 0,
             total_workouts=1,
-            total_calories=workout.calories or 0,
-            total_duration=workout.duration or 0
+            completed_routes=1 if workout.status == "completed" else 0
         )
         db.add(stats)
     
     db.commit()
-    
-    # 업적 확인 (TODO: 실제 업적 로직 구현)
-    achievements = check_achievements(current_user.id, workout, db)
     
     # 구간 기록 조회
     splits = db.query(WorkoutSplit).filter(
@@ -439,42 +423,10 @@ def complete_workout(
                 "type": workout.type
             },
             splits=split_list,
-            achievements=achievements,
             completed_at=workout.completed_at
         ),
         message="운동이 완료되었습니다"
     )
-
-
-def check_achievements(user_id: int, workout: Workout, db: Session) -> List[AchievementSchema]:
-    """
-    운동 완료 시 달성한 업적을 확인합니다.
-    
-    TODO: 실제 업적 로직 구현
-    - 첫 운동 완료
-    - 5km 달성
-    - 10km 달성
-    - 연속 7일 운동
-    - 등등
-    """
-    achievements = []
-    
-    # 첫 운동 완료 체크
-    total_workouts = db.query(func.count(Workout.id)).filter(
-        Workout.user_id == user_id,
-        Workout.status == "completed"
-    ).scalar()
-    
-    if total_workouts == 1:
-        achievements.append(AchievementSchema(
-            id="first_workout",
-            name="첫 걸음",
-            description="첫 번째 운동을 완료했습니다!",
-            icon="🏃",
-            unlocked_at=datetime.utcnow()
-        ))
-    
-    return achievements
 
 
 # ============================================
@@ -556,18 +508,10 @@ def get_workout_detail(
             resource_id=workout_id
         )
     
-    # 이동 경로 조회
-    tracks = db.query(WorkoutTrack).filter(
-        WorkoutTrack.workout_id == workout_id
-    ).order_by(WorkoutTrack.timestamp).all()
-    
+    # 이동 경로 조회 (path_data JSON 필드에서)
     path_coordinates = []
-    for track in tracks:
-        path_coordinates.append({
-            "lat": track.latitude,
-            "lng": track.longitude,
-            "timestamp": track.timestamp.isoformat()
-        })
+    if workout.path_data and "coordinates" in workout.path_data:
+        path_coordinates = workout.path_data["coordinates"]
     
     # 구간 기록 조회
     splits = db.query(WorkoutSplit).filter(
@@ -593,10 +537,7 @@ def get_workout_detail(
             avg_pace=round(workout.avg_pace, 2) if workout.avg_pace else None,
             calories=workout.calories or 0,
             route_info={
-                "name": workout.route_name,
-                "shape_id": workout.shape_id,
-                "shape_name": workout.shape_name,
-                "shape_icon": workout.shape_icon
+                "name": workout.route_name
             } if workout.route_name else None,
             path=path_coordinates,
             splits=split_list,

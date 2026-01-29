@@ -18,7 +18,7 @@ from app.schemas.user import (
     UserProfileResponse, UserProfileResponseWrapper,
     UserProfileUpdateRequest, UserUpdateResponse, UserUpdateResponseWrapper,
     UserDeleteRequest, UserDeleteResponse,
-    UserStatsDetailSchema, BadgeSchema, UserPreferencesSchema
+    UserStatsDetailSchema, UserPreferencesSchema
 )
 from app.schemas.workout import (
     WorkoutSummarySchema, WorkoutListResponse, WorkoutListResponseWrapper
@@ -43,7 +43,6 @@ router = APIRouter(prefix="/users", tags=["Users"])
     **포함 정보:**
     - 기본 정보 (이메일, 이름, 아바타)
     - 통계 정보 (총 거리, 운동 횟수 등)
-    - 획득한 배지 목록
     - 사용자 설정
     """
 )
@@ -57,29 +56,15 @@ def get_my_profile(
     stats = UserStatsDetailSchema(
         total_distance=float(current_user.stats.total_distance) if current_user.stats else 0,
         total_workouts=current_user.stats.total_workouts if current_user.stats else 0,
-        completed_routes=current_user.stats.completed_routes if current_user.stats else 0,
-        total_calories=current_user.stats.total_calories if current_user.stats else 0,
-        total_duration=current_user.stats.total_duration if current_user.stats else 0
+        completed_routes=current_user.stats.completed_routes if current_user.stats else 0
     )
-    
-    # 배지 정보 (TODO: 실제 배지 조회 로직 구현 필요)
-    badges = []
-    for user_badge in current_user.badges:
-        badges.append(BadgeSchema(
-            id=user_badge.badge.id,
-            name=user_badge.badge.name,
-            description=user_badge.badge.description,
-            icon=user_badge.badge.icon,
-            unlocked_at=user_badge.unlocked_at
-        ))
     
     # 설정 정보
     preferences = None
     if current_user.settings:
         preferences = UserPreferencesSchema(
-            voice_guide=current_user.settings.voice_guide,
             dark_mode=current_user.settings.dark_mode,
-            unit="km"  # TODO: 단위 설정 추가
+            auto_lap=current_user.settings.auto_lap
         )
     
     # 응답 데이터 생성
@@ -87,10 +72,8 @@ def get_my_profile(
         id=current_user.id,
         email=current_user.email,
         name=current_user.name,
-        avatar=current_user.avatar,
-        provider=current_user.provider,
+        avatar_url=current_user.avatar_url,
         stats=stats,
-        badges=badges,
         preferences=preferences,
         created_at=current_user.created_at,
         updated_at=current_user.updated_at
@@ -114,8 +97,8 @@ def get_my_profile(
     
     **수정 가능 항목:**
     - 이름
-    - 아바타 이미지 (URL 또는 Base64)
-    - 사용자 설정 (음성 안내, 단위 등)
+    - 아바타 이미지 URL
+    - 사용자 설정
     
     **부분 업데이트:** 변경할 필드만 전송
     """
@@ -132,15 +115,15 @@ def update_my_profile(
         current_user.name = request.name
     
     # 아바타 변경
-    if request.avatar is not None:
-        current_user.avatar = request.avatar
+    if request.avatar_url is not None:
+        current_user.avatar_url = request.avatar_url
     
     # 설정 변경
     if request.preferences is not None and current_user.settings:
-        if request.preferences.voice_guide is not None:
-            current_user.settings.voice_guide = request.preferences.voice_guide
         if request.preferences.dark_mode is not None:
             current_user.settings.dark_mode = request.preferences.dark_mode
+        if request.preferences.auto_lap is not None:
+            current_user.settings.auto_lap = request.preferences.auto_lap
     
     current_user.updated_at = datetime.utcnow()
     db.commit()
@@ -150,9 +133,8 @@ def update_my_profile(
     preferences = None
     if current_user.settings:
         preferences = UserPreferencesSchema(
-            voice_guide=current_user.settings.voice_guide,
             dark_mode=current_user.settings.dark_mode,
-            unit="km"
+            auto_lap=current_user.settings.auto_lap
         )
     
     return UserUpdateResponseWrapper(
@@ -160,7 +142,7 @@ def update_my_profile(
         data=UserUpdateResponse(
             id=current_user.id,
             name=current_user.name,
-            avatar=current_user.avatar,
+            avatar_url=current_user.avatar_url,
             preferences=preferences,
             updated_at=current_user.updated_at
         ),
@@ -179,11 +161,9 @@ def update_my_profile(
     회원 탈퇴를 처리합니다.
     
     **일반 로그인 사용자:** 비밀번호 확인 필요
-    **소셜 로그인 사용자:** 바로 탈퇴 가능
     
     **주의:** 
-    - 30일 유예기간 후 완전 삭제
-    - 유예기간 내 복구 가능
+    - Soft Delete로 처리됨
     """
 )
 def delete_my_account(
@@ -195,8 +175,8 @@ def delete_my_account(
     from app.core.security import verify_password
     from app.core.exceptions import ValidationException
     
-    # 일반 로그인 사용자는 비밀번호 확인
-    if current_user.provider is None and current_user.password_hash:
+    # 비밀번호 확인
+    if current_user.password_hash:
         if not request or not request.password:
             raise ValidationException(
                 message="비밀번호를 입력해주세요",
@@ -236,15 +216,14 @@ def delete_my_account(
     - calories_desc: 칼로리순
     
     **필터:**
-    - type: running/walking
-    - startDate, endDate: 기간 필터
+    - mode: running/walking
     """
 )
 def get_my_workouts(
     page: int = Query(1, ge=1, description="페이지 번호"),
     limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
     sort: str = Query("date_desc", description="정렬 방식"),
-    type: Optional[str] = Query(None, description="운동 타입 (running/walking)"),
+    mode: Optional[str] = Query(None, description="운동 모드 (running/walking)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -257,9 +236,9 @@ def get_my_workouts(
         Workout.deleted_at.is_(None)
     )
     
-    # 타입 필터
-    if type:
-        query = query.filter(Workout.type == type)
+    # 모드 필터
+    if mode:
+        query = query.filter(Workout.mode == mode)
     
     # 정렬
     if sort == "distance_desc":
@@ -283,21 +262,18 @@ def get_my_workouts(
             id=workout.id,
             route_name=workout.route_name,
             type=workout.type,
-            distance=float(workout.distance) if workout.distance else 0,
-            duration=workout.duration or 0,
-            pace=workout.avg_pace,
+            mode=workout.mode,
+            distance=float(workout.distance) if workout.distance else None,
+            duration=workout.duration,
+            avg_pace=workout.avg_pace,
             calories=workout.calories,
-            route_data={
-                "shape_id": workout.shape_id,
-                "shape_name": workout.shape_name,
-                "icon_name": workout.shape_icon,
-                "is_custom": False
-            } if workout.shape_id else None,
+            route_completion=float(workout.route_completion) if workout.route_completion else None,
+            started_at=workout.started_at,
             completed_at=workout.completed_at
         ))
     
     # 페이지네이션 정보
-    total_pages = (total_count + limit - 1) // limit
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
     pagination = {
         "current_page": page,
         "total_pages": total_pages,
@@ -324,18 +300,11 @@ def get_my_workouts(
     summary="저장한 경로 조회",
     description="""
     북마크한 경로 목록을 조회합니다.
-    
-    **정렬 옵션:**
-    - date_desc: 저장 최신순 (기본값)
-    - name_asc: 이름순
-    - distance_asc: 거리순
-    - safety_desc: 안전도순
     """
 )
 def get_my_saved_routes(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    sort: str = Query("date_desc"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -344,11 +313,7 @@ def get_my_saved_routes(
     # 기본 쿼리
     query = db.query(SavedRoute).filter(
         SavedRoute.user_id == current_user.id
-    )
-    
-    # 정렬
-    if sort == "date_desc":
-        query = query.order_by(SavedRoute.saved_at.desc())
+    ).order_by(SavedRoute.saved_at.desc())
     
     # 전체 개수
     total_count = query.count()
@@ -358,108 +323,33 @@ def get_my_saved_routes(
     saved_routes = query.offset(offset).limit(limit).all()
     
     # 응답 데이터 변환
-    route_list = []
-    for saved in saved_routes:
-        route = saved.route
+    routes_list = []
+    for saved_route in saved_routes:
+        route = db.query(Route).filter(Route.id == saved_route.route_id).first()
         if route:
-            route_list.append({
-                "id": saved.id,
+            routes_list.append({
+                "id": saved_route.id,
                 "route_id": route.id,
                 "route_name": route.name,
                 "distance": float(route.options[0].distance) if route.options else 0,
-                "safety": route.options[0].safety_score if route.options else 0,
-                "shape_id": route.shape.shape_id if route.shape else None,
-                "shape_name": route.shape.name if route.shape else None,
-                "icon_name": route.shape.icon_name if route.shape else None,
-                "location": {
-                    "address": route.location_address,
-                    "district": route.location_district
-                },
-                "saved_at": saved.saved_at.isoformat()
+                "safety_score": route.options[0].safety_score if route.options else 0,
+                "saved_at": saved_route.saved_at
             })
     
     # 페이지네이션 정보
-    total_pages = (total_count + limit - 1) // limit
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
     
     return {
         "success": True,
         "data": {
-            "saved_routes": route_list,
+            "routes": routes_list,
             "pagination": {
                 "current_page": page,
                 "total_pages": total_pages,
-                "total_count": total_count
+                "total_count": total_count,
+                "has_next": page < total_pages,
+                "has_prev": page > 1
             }
         },
         "message": "저장한 경로 조회 성공"
-    }
-
-
-# ============================================
-# 사용자 통계 대시보드
-# ============================================
-@router.get(
-    "/me/statistics",
-    summary="사용자 통계 대시보드",
-    description="""
-    사용자의 상세 운동 통계를 조회합니다.
-    
-    **포함 정보:**
-    - 전체 통계 (총 거리, 운동 횟수, 칼로리 등)
-    - 주간/월간 통계
-    - 개인 최고 기록
-    - 최근 운동 목록
-    """
-)
-def get_my_statistics(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """사용자 통계 조회 엔드포인트"""
-    
-    stats = current_user.stats
-    
-    # 전체 통계
-    overview = {
-        "total_distance": float(stats.total_distance) if stats else 0,
-        "total_workouts": stats.total_workouts if stats else 0,
-        "total_calories": stats.total_calories if stats else 0,
-        "total_duration": stats.total_duration if stats else 0,
-        "current_streak": 0,  # TODO: 연속 운동 일수 계산
-        "longest_streak": 0
-    }
-    
-    # 최근 운동 목록
-    recent_workouts = db.query(Workout).filter(
-        Workout.user_id == current_user.id,
-        Workout.status == "completed",
-        Workout.deleted_at.is_(None)
-    ).order_by(Workout.completed_at.desc()).limit(5).all()
-    
-    recent_list = []
-    for workout in recent_workouts:
-        recent_list.append({
-            "id": workout.id,
-            "distance": float(workout.distance) if workout.distance else 0,
-            "duration": workout.duration or 0,
-            "completed_at": workout.completed_at.isoformat()
-        })
-    
-    return {
-        "success": True,
-        "data": {
-            "overview": overview,
-            "weekly": {
-                "distance": 0,  # TODO: 주간 통계 계산
-                "workouts": 0,
-                "calories": 0
-            },
-            "monthly": {
-                "distance": 0,  # TODO: 월간 통계 계산
-                "workouts": 0
-            },
-            "personal_bests": [],  # TODO: 개인 최고 기록 조회
-            "recent_workouts": recent_list
-        },
-        "message": "통계 조회 성공"
     }

@@ -13,28 +13,11 @@ from pydantic import BaseModel, Field, EmailStr
 # 공통 스키마
 # ============================================
 
-class BadgeSchema(BaseModel):
-    """배지 스키마"""
-    id: str
-    name: str
-    description: Optional[str] = None
-    icon: str
-    unlocked_at: Optional[datetime] = None
-    category: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-
-
 class UserStatsDetailSchema(BaseModel):
     """사용자 통계 상세 스키마"""
     total_distance: float = 0  # km
     total_workouts: int = 0
     completed_routes: int = 0
-    total_calories: int = 0  # kcal
-    total_duration: int = 0  # 초
-    average_pace: Optional[str] = None
-    longest_run: Optional[float] = None  # km
     
     class Config:
         from_attributes = True
@@ -42,9 +25,8 @@ class UserStatsDetailSchema(BaseModel):
 
 class UserPreferencesSchema(BaseModel):
     """사용자 선호 설정 스키마"""
-    voice_guide: bool = True
     dark_mode: bool = True
-    unit: str = "km"
+    auto_lap: bool = False
 
 
 # ============================================
@@ -60,16 +42,17 @@ class UserProfileUpdateRequest(BaseModel):
     - None인 필드는 변경하지 않음 (부분 업데이트)
     """
     name: Optional[str] = Field(None, min_length=1, max_length=100, description="이름")
-    avatar: Optional[str] = Field(None, description="프로필 이미지 URL 또는 Base64")
+    avatar_url: Optional[str] = Field(None, description="프로필 이미지 URL")
     preferences: Optional[UserPreferencesSchema] = Field(None, description="사용자 설정")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "name": "새로운이름",
+                "avatar_url": "https://example.com/avatar.jpg",
                 "preferences": {
-                    "voice_guide": True,
-                    "unit": "km"
+                    "dark_mode": True,
+                    "auto_lap": False
                 }
             }
         }
@@ -77,7 +60,7 @@ class UserProfileUpdateRequest(BaseModel):
 
 class UserDeleteRequest(BaseModel):
     """회원 탈퇴 요청 스키마"""
-    password: Optional[str] = Field(None, description="비밀번호 (일반 로그인 사용자)")
+    password: Optional[str] = Field(None, description="비밀번호")
     reason: Optional[str] = Field(None, max_length=500, description="탈퇴 사유")
 
 
@@ -94,10 +77,8 @@ class UserProfileResponse(BaseModel):
     id: str
     email: str
     name: str
-    avatar: Optional[str] = None
-    provider: Optional[str] = None
+    avatar_url: Optional[str] = None
     stats: UserStatsDetailSchema
-    badges: List[BadgeSchema] = []
     preferences: Optional[UserPreferencesSchema] = None
     created_at: datetime
     updated_at: datetime
@@ -117,7 +98,7 @@ class UserUpdateResponse(BaseModel):
     """프로필 수정 응답 스키마"""
     id: str
     name: str
-    avatar: Optional[str] = None
+    avatar_url: Optional[str] = None
     preferences: Optional[UserPreferencesSchema] = None
     updated_at: datetime
 
@@ -157,9 +138,6 @@ class UserSettingsSchema(BaseModel):
     community_activity: bool = False
     
     # 운동 설정
-    sound_effect: bool = True
-    vibration: bool = True
-    voice_guide: bool = True
     auto_lap: bool = False
     
     # 안전 설정

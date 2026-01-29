@@ -28,20 +28,15 @@ class RouteShape(Base):
     예: 하트, 별, 커피, 스마일, 강아지, 고양이 등
     """
     __tablename__ = "route_shapes"
+    __table_args__ = {'comment': '템플릿 저장경로'}
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    
-    # shape_id: 도형 식별자 (heart, star, coffee, smile, dog, cat)
-    shape_id = Column(String(50), unique=True, nullable=False)
-    
-    name = Column(String(50), nullable=False)           # 도형 이름 (하트, 별 등)
-    icon_name = Column(String(50), nullable=False)      # 아이콘 이름
-    category = Column(String(20), nullable=False)       # 카테고리 (shape, animal)
-    
-    estimated_distance = Column(DECIMAL(5, 2), nullable=True)  # 예상 거리 (km)
-    svg_template = Column(Text, nullable=True)          # SVG 템플릿 경로 데이터
-    
-    is_active = Column(Boolean, default=True)           # 활성화 여부
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
+    name = Column(String(50), nullable=False, comment='도형 이름 (하트, 별 등)')
+    icon_name = Column(String(50), nullable=False, comment='아이콘 이름')
+    category = Column(String(20), nullable=False, comment='카테고리 (shape, animal)')
+    estimated_distance = Column(DECIMAL(5, 2), nullable=True, comment='예상 거리 (km)')
+    svg_url = Column(Text, nullable=True, comment='SVG url')
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
     # 이 도형을 사용한 경로들
@@ -56,44 +51,39 @@ class Route(Base):
     프리셋 도형 또는 커스텀 그리기로 생성된 경로 모두 이 테이블에 저장됩니다.
     
     [신입 개발자를 위한 팁]
-    - type: 'preset' (미리 정의된 도형) 또는 'custom' (사용자 직접 그리기)
-    - mode: 'running' (러닝) 또는 'walking' (산책)
+    - type: 'preset' (미리 정의된 도형), 'custom' (사용자 직접 그리기), 'none' (도형 그리기 아님)
+    - mode: 'running' (러닝), 'walking' (산책), 'none' (도형 그리기)
     """
     __tablename__ = "routes"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='생성자 ID')
+    shape_id = Column(String(36), ForeignKey("route_shapes.id"), nullable=True, comment='프리셋 도형 ID (null=커스텀)')
     
-    # 도형 정보 (프리셋인 경우에만)
-    shape_id = Column(String(36), ForeignKey("route_shapes.id"), nullable=True)
-    
-    name = Column(String(100), nullable=False)          # 경로 이름
-    type = Column(String(20), nullable=False)           # preset / custom
-    mode = Column(String(20), nullable=False)           # running / walking
+    name = Column(String(100), nullable=False, comment='경로 이름')
+    type = Column(String(20), nullable=True, comment='preset / custom / none(null아님!)은 도형그리기 아님')
+    mode = Column(String(20), nullable=True, comment='running / walking / none(null아님!)은 도형그리기임')
     
     # ========== 위치 정보 ==========
-    start_latitude = Column(DECIMAL(10, 7), nullable=False)   # 시작점 위도
-    start_longitude = Column(DECIMAL(10, 7), nullable=False)  # 시작점 경도
-    location_address = Column(String(255), nullable=True)     # 주소
-    location_district = Column(String(50), nullable=True)     # 지역명 (여의도, 강남 등)
+    start_latitude = Column(DECIMAL(10, 7), nullable=False, comment='시작점 위도')
+    start_longitude = Column(DECIMAL(10, 7), nullable=False, comment='시작점 경도')
     
-    # ========== 커스텀 경로 데이터 (type='custom'인 경우) ==========
-    custom_svg_path = Column(Text, nullable=True)       # SVG Path 데이터
-    custom_points = Column(JSON, nullable=True)         # 좌표 배열 [{x, y}]
+    # ========== 커스텀 경로 데이터 ==========
+    custom_svg_url = Column(Text, nullable=True, comment='SVG Path 데이터 (커스텀인 경우)')
     
     # ========== 운동 설정 ==========
     # 러닝 설정
-    condition = Column(String(20), nullable=True)       # recovery/fat-burn/challenge
+    condition = Column(String(20), nullable=True, comment='recovery/fat-burn/challenge (러닝)')
     
     # 산책 설정
-    intensity = Column(String(20), nullable=True)       # light/moderate/brisk
-    target_duration = Column(Integer, nullable=True)    # 목표 시간 (분)
+    intensity = Column(String(20), nullable=True, comment='light/moderate/brisk (산책)')
+    target_duration = Column(Integer, nullable=True, comment='목표 시간 (분, 산책)')
     
     # 안전 모드
-    safety_mode = Column(Boolean, default=False)
+    safety_mode = Column(Boolean, default=False, comment='안전 우선 모드')
     
     # 상태
-    status = Column(String(20), nullable=False, default="active")  # active/deleted
+    status = Column(String(20), nullable=False, default="active", comment='active/deleted')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -101,7 +91,6 @@ class Route(Base):
     # ========== 관계 정의 ==========
     shape = relationship("RouteShape", back_populates="routes")
     options = relationship("RouteOption", back_populates="route", lazy="select")
-    waypoints = relationship("RouteWaypoint", back_populates="route", lazy="select")
     saved_by = relationship("SavedRoute", back_populates="route", lazy="select")
 
 
@@ -114,57 +103,30 @@ class RouteOption(Base):
     """
     __tablename__ = "route_options"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
+    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False, comment='경로 ID')
     
-    option_number = Column(Integer, nullable=False)     # 옵션 번호 (1, 2, 3)
-    name = Column(String(100), nullable=False)          # 옵션 이름 (하트 경로 A 등)
+    option_number = Column(Integer, nullable=False, comment='옵션 번호 (1, 2, 3)')
+    name = Column(String(100), nullable=False, comment='옵션 이름 (하트 경로 A 등)')
     
-    distance = Column(DECIMAL(5, 2), nullable=False)    # 거리 (km)
-    estimated_time = Column(Integer, nullable=False)    # 예상 소요 시간 (분)
-    difficulty = Column(String(20), nullable=False)     # 쉬움/보통/도전
-    tag = Column(String(20), nullable=True)             # 추천/BEST/null
+    distance = Column(DECIMAL(5, 2), nullable=False, comment='거리 (km)')
+    estimated_time = Column(Integer, nullable=False, comment='예상 소요 시간 (분)')
+    difficulty = Column(String(20), nullable=False, comment='쉬움/보통/도전')
+    tag = Column(String(20), nullable=True, comment='추천/BEST/null')
     
     # 경로 좌표 배열 [{lat, lng}]
-    coordinates = Column(JSON, nullable=False)
+    coordinates = Column(JSON, nullable=False, comment='[{lat, lng}] 배열')
     
     # ========== 점수/특성 ==========
-    safety_score = Column(Integer, default=0)           # 안전도 (0-100)
-    elevation = Column(Integer, default=0)              # 고도차 (m)
-    lighting_score = Column(Integer, default=0)         # 조명 점수 (0-100)
-    sidewalk_score = Column(Integer, default=0)         # 인도 비율 (0-100)
-    convenience_count = Column(Integer, default=0)      # 주변 편의시설 수
+    safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
+    elevation = Column(Integer, default=0, comment='고도차 (m)')
+    lighting_score = Column(Integer, default=0, comment='조명 점수 (0-100)')
+    sidewalk_score = Column(Integer, default=0, comment='인도 비율 (0-100)')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
-    # 복합 유니크 제약조건 (같은 경로에 같은 번호의 옵션 중복 불가)
-    __table_args__ = (
-        UniqueConstraint('route_id', 'option_number', name='unique_route_option'),
-    )
-    
     # 관계 정의
     route = relationship("Route", back_populates="options")
-    nearby_places = relationship("NearbyPlace", back_populates="route_option", lazy="select")
-
-
-class RouteWaypoint(Base):
-    """
-    경로 경유지 테이블 (route_waypoints)
-    
-    산책 모드에서 선택한 경유지(카페, 공원 등)를 저장합니다.
-    """
-    __tablename__ = "route_waypoints"
-    
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False)
-    place_id = Column(String(36), ForeignKey("places.id"), nullable=False)
-    
-    order_index = Column(Integer, nullable=False)       # 경유 순서
-    estimated_time = Column(String(20), nullable=True)  # 예상 소요 시간 (6분)
-    
-    # 관계 정의
-    route = relationship("Route", back_populates="waypoints")
-    place = relationship("Place", back_populates="route_waypoints")
 
 
 class SavedRoute(Base):
@@ -172,15 +134,14 @@ class SavedRoute(Base):
     저장된 경로 테이블 (saved_routes)
     
     사용자가 북마크한 경로를 저장합니다.
-    커뮤니티에서 마음에 드는 경로를 저장할 수 있습니다.
     """
     __tablename__ = "saved_routes"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
-    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='저장한 사용자 ID')
+    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False, comment='경로 ID')
     
-    saved_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    saved_at = Column(DateTime, nullable=False, default=datetime.utcnow, comment='저장 일시')
     
     # 복합 유니크 제약조건 (같은 경로 중복 저장 불가)
     __table_args__ = (
@@ -197,32 +158,27 @@ class RouteGenerationTask(Base):
     
     AI 경로 생성은 시간이 걸리므로 비동기로 처리합니다.
     이 테이블은 생성 작업의 상태와 진행률을 추적합니다.
-    
-    [신입 개발자를 위한 팁]
-    - 프론트엔드에서 POST /routes/generate 호출 → task_id 반환
-    - 프론트엔드에서 2초마다 GET /routes/generate/{task_id} 호출 → 진행률 확인
-    - status가 'completed'가 되면 route_id로 경로 조회
     """
     __tablename__ = "route_generation_tasks"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID, task_id로 사용')
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='요청한 사용자 ID')
     
     # 작업 상태
-    status = Column(String(20), nullable=False, default="processing")  # processing/completed/failed
-    progress = Column(Integer, default=0)               # 진행률 (0-100)
-    current_step = Column(String(100), nullable=True)   # 현재 단계 설명
-    estimated_remaining = Column(Integer, nullable=True) # 예상 남은 시간 (초)
+    status = Column(String(20), nullable=False, default="processing", comment='processing/completed/failed')
+    progress = Column(Integer, default=0, comment='진행률 (0-100)')
+    current_step = Column(String(100), nullable=True, comment='현재 단계 설명')
+    estimated_remaining = Column(Integer, nullable=True, comment='예상 남은 시간 (초)')
     
     # 요청 데이터 (전체 저장)
-    request_data = Column(JSON, nullable=False)
+    request_data = Column(JSON, nullable=False, comment='경로 생성 요청 전체 데이터')
     
     # 결과 (완료 시)
-    route_id = Column(String(36), ForeignKey("routes.id"), nullable=True)
-    error_message = Column(String(500), nullable=True)  # 에러 메시지 (실패 시)
+    route_id = Column(String(36), ForeignKey("routes.id"), nullable=True, comment='생성된 경로 ID (완료 시)')
+    error_message = Column(String(500), nullable=True, comment='에러 메시지 (실패 시)')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True, comment='완료/실패 시간')
 
 
 class Place(Base):
@@ -233,48 +189,24 @@ class Place(Base):
     """
     __tablename__ = "places"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
     
-    name = Column(String(100), nullable=False)          # 장소 이름
-    category = Column(String(30), nullable=False)       # cafe/convenience/park/photo/restroom/fountain/cctv
+    name = Column(String(100), nullable=False, comment='장소 이름')
+    category = Column(String(30), nullable=False, comment='cafe/convenience/park/photo/restroom/fountain/cctv')
     
-    latitude = Column(DECIMAL(10, 7), nullable=False)   # 위도
-    longitude = Column(DECIMAL(10, 7), nullable=False)  # 경도
-    address = Column(String(255), nullable=True)        # 주소
+    latitude = Column(DECIMAL(10, 7), nullable=False, comment='위도')
+    longitude = Column(DECIMAL(10, 7), nullable=False, comment='경도')
+    address = Column(String(255), nullable=True, comment='주소')
     
-    rating = Column(DECIMAL(2, 1), nullable=True)       # 평점 (0.0-5.0)
-    review_count = Column(Integer, default=0)           # 리뷰 수
+    rating = Column(DECIMAL(2, 1), nullable=True, comment='평점 (0.0-5.0)')
+    review_count = Column(Integer, default=0, comment='리뷰 수')
     
-    icon = Column(String(50), nullable=True)            # 아이콘 이름 (coffee, store, trees 등)
-    color = Column(String(10), nullable=True)           # 색상 코드 (#f59e0b)
+    icon = Column(String(50), nullable=True, comment='아이콘 이름 (coffee, store, trees 등)')
+    color = Column(String(10), nullable=True, comment='색상 코드 (#f59e0b)')
     
-    is_active = Column(Boolean, default=True)           # 활성화 여부
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # 관계 정의
-    route_waypoints = relationship("RouteWaypoint", back_populates="place")
-    nearby_route_options = relationship("NearbyPlace", back_populates="place")
-
-
-class NearbyPlace(Base):
-    """
-    주변 장소 테이블 (nearby_places)
-    
-    각 경로 옵션 주변의 편의시설 정보를 저장합니다.
-    """
-    __tablename__ = "nearby_places"
-    
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    route_option_id = Column(String(36), ForeignKey("route_options.id"), nullable=False)
-    place_id = Column(String(36), ForeignKey("places.id"), nullable=False)
-    
-    distance = Column(String(20), nullable=True)        # 경로로부터 거리 (0.2km)
-    estimated_time = Column(String(20), nullable=True)  # 도보 소요 시간 (3분)
-    
-    # 관계 정의
-    route_option = relationship("RouteOption", back_populates="nearby_places")
-    place = relationship("Place", back_populates="nearby_route_options")
 
 
 class RecommendedRoute(Base):
@@ -282,25 +214,24 @@ class RecommendedRoute(Base):
     추천 경로 테이블 (recommended_routes)
     
     홈 화면에 표시할 추천 경로를 관리합니다.
-    위치, 시간대, 인기도 등에 따라 추천 경로를 선정합니다.
     """
     __tablename__ = "recommended_routes"
     
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False)
+    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
+    route_id = Column(String(36), ForeignKey("routes.id"), nullable=False, comment='경로 ID')
     
     # 추천 대상 지역
-    target_latitude = Column(DECIMAL(10, 7), nullable=True)   # 타겟 위도
-    target_longitude = Column(DECIMAL(10, 7), nullable=True)  # 타겟 경도
-    radius_km = Column(DECIMAL(5, 2), nullable=True)          # 추천 반경 (km)
+    target_latitude = Column(DECIMAL(10, 7), nullable=True, comment='타겟 위도')
+    target_longitude = Column(DECIMAL(10, 7), nullable=True, comment='타겟 경도')
+    radius_km = Column(DECIMAL(5, 2), nullable=True, comment='추천 반경 (km)')
     
-    rating = Column(DECIMAL(2, 1), nullable=True)       # 평점
-    runner_count = Column(Integer, default=0)           # 이용자 수
-    reason = Column(String(255), nullable=True)         # 추천 이유
-    priority = Column(Integer, default=0)               # 추천 우선순위
+    rating = Column(DECIMAL(2, 1), nullable=True, comment='평점')
+    runner_count = Column(Integer, default=0, comment='이용자 수')
+    reason = Column(String(255), nullable=True, comment='추천 이유')
+    priority = Column(Integer, default=0, comment='추천 우선순위')
     
-    is_active = Column(Boolean, default=True)           # 활성화 여부
-    start_date = Column(Date, nullable=True)            # 추천 시작일
-    end_date = Column(Date, nullable=True)              # 추천 종료일
+    is_active = Column(Boolean, default=True)
+    start_date = Column(Date, nullable=True, comment='추천 시작일')
+    end_date = Column(Date, nullable=True, comment='추천 종료일')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

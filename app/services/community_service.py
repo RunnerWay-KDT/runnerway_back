@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from app.models.user import User
-from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike, Follow
+from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike
 from app.core.exceptions import NotFoundException, ValidationException, ForbiddenException
 
 
@@ -65,13 +65,6 @@ class CommunityService:
             tuple: (게시글 목록, 전체 개수)
         """
         query = self.db.query(Post).filter(Post.deleted_at.is_(None))
-        
-        # 팔로우 필터
-        if following_only and user_id:
-            following_ids = self.db.query(Follow.following_id).filter(
-                Follow.follower_id == user_id
-            ).subquery()
-            query = query.filter(Post.user_id.in_(following_ids))
         
         # 타입 필터
         if post_type and post_type != "all":
@@ -139,7 +132,7 @@ class CommunityService:
                 "type": workout.type,
                 "distance": float(workout.distance) if workout.distance else None,
                 "duration": workout.duration,
-                "route_shape": workout.shape_name
+                "route_name": workout.route_name
             }
         
         post = Post(
@@ -150,7 +143,7 @@ class CommunityService:
             type=workout_data.get("type") if workout_data else None,
             distance=workout_data.get("distance") if workout_data else None,
             duration=workout_data.get("duration") if workout_data else None,
-            route_shape=workout_data.get("route_shape") if workout_data else None
+            route_shape=workout_data.get("route_name") if workout_data else None
         )
         
         self.db.add(post)
@@ -534,94 +527,6 @@ class CommunityService:
         comments = query.offset(offset).limit(limit).all()
         
         return comments, total
-    
-    
-    # ============================================
-    # 팔로우 관련
-    # ============================================
-    
-    def follow_user(self, follower_id: int, following_id: int) -> bool:
-        """
-        사용자 팔로우
-        
-        Args:
-            follower_id: 팔로우하는 사용자 ID
-            following_id: 팔로우받는 사용자 ID
-        
-        Returns:
-            bool: 팔로우 성공 여부
-        """
-        if follower_id == following_id:
-            raise ValidationException(
-                message="자기 자신을 팔로우할 수 없습니다",
-                field="user_id"
-            )
-        
-        # 대상 사용자 존재 확인
-        target = self.db.query(User).filter(
-            User.id == following_id,
-            User.deleted_at.is_(None)
-        ).first()
-        
-        if not target:
-            raise NotFoundException(
-                resource="User",
-                resource_id=following_id
-            )
-        
-        # 이미 팔로우했는지 확인
-        existing = self.db.query(Follow).filter(
-            Follow.follower_id == follower_id,
-            Follow.following_id == following_id
-        ).first()
-        
-        if existing:
-            raise ValidationException(
-                message="이미 팔로우한 사용자입니다",
-                field="user_id"
-            )
-        
-        follow = Follow(follower_id=follower_id, following_id=following_id)
-        self.db.add(follow)
-        self.db.commit()
-        
-        return True
-    
-    
-    def unfollow_user(self, follower_id: int, following_id: int) -> bool:
-        """
-        사용자 언팔로우
-        
-        Args:
-            follower_id: 팔로우하는 사용자 ID
-            following_id: 팔로우받는 사용자 ID
-        
-        Returns:
-            bool: 언팔로우 성공 여부
-        """
-        follow = self.db.query(Follow).filter(
-            Follow.follower_id == follower_id,
-            Follow.following_id == following_id
-        ).first()
-        
-        if not follow:
-            raise NotFoundException(
-                resource="Follow",
-                resource_id=following_id
-            )
-        
-        self.db.delete(follow)
-        self.db.commit()
-        
-        return True
-    
-    
-    def is_following(self, follower_id: int, following_id: int) -> bool:
-        """팔로우 여부 확인"""
-        return self.db.query(Follow).filter(
-            Follow.follower_id == follower_id,
-            Follow.following_id == following_id
-        ).first() is not None
     
     
     # ============================================

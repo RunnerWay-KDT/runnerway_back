@@ -16,7 +16,8 @@
 .env.production
 .env.development
 
-runnerway.erd
+러너웨이테이블.erd
+러너웨이테이블.sql
 
 # --------------------------------------------
 # Python 관련

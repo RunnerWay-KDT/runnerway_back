@@ -17,12 +17,11 @@ runnerway_back/
 │   │   ├── v1/                  # API 버전 1
 │   │   │   ├── __init__.py
 │   │   │   ├── router.py        # 모든 라우터를 모아놓은 파일
-│   │   │   ├── auth.py          # 인증 관련 API (로그인, 회원가입)
+│   │   │   ├── auth.py          # 인증 관련 API (회원가입, 로그인)
 │   │   │   ├── users.py         # 사용자 관련 API
 │   │   │   ├── routes.py        # 경로 생성 관련 API
 │   │   │   ├── workouts.py      # 운동 관련 API
-│   │   │   ├── community.py     # 커뮤니티 관련 API
-│   │   │   └── recommendations.py  # 추천 관련 API
+│   │   │   └── community.py     # 커뮤니티 관련 API
 │   │   └── deps.py              # API 의존성 (인증 체크 등)
 │   │
 │   ├── core/                    # 핵심 기능 모음
@@ -43,21 +42,23 @@ runnerway_back/
 │   │   ├── user.py              # 사용자 관련 스키마
 │   │   ├── route.py             # 경로 관련 스키마
 │   │   ├── workout.py           # 운동 관련 스키마
-│   │   └── community.py         # 커뮤니티 관련 스키마
+│   │   ├── community.py         # 커뮤니티 관련 스키마
+│   │   └── common.py            # 공통 스키마
 │   │
 │   ├── services/                # 비즈니스 로직 (실제 기능 구현)
 │   │   ├── __init__.py
 │   │   ├── auth_service.py      # 인증 서비스
-│   │   ├── user_service.py      # 사용자 서비스
 │   │   ├── route_service.py     # 경로 서비스
 │   │   ├── workout_service.py   # 운동 서비스
 │   │   ├── community_service.py # 커뮤니티 서비스
-│   │   └── kakao_service.py     # 카카오 API 연동 서비스
+│   │   └── kakao_service.py     # 카카오 맵 API 서비스
 │   │
 │   └── db/                      # 데이터베이스 관련
 │       ├── __init__.py
-│       ├── database.py          # DB 연결 설정
-│       └── init_db.py           # DB 초기화
+│       └── database.py          # DB 연결 설정
+│
+├── scripts/                     # 유틸리티 스크립트
+│   └── check_db.py             # DB 연결 테스트
 │
 ├── requirements.txt             # 필요한 패키지 목록
 ├── .env.example                 # 환경 변수 예시 파일
@@ -126,10 +127,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### 인증 API (`/api/v1/auth`)
 
-- `POST /signup` - 회원가입
-- `POST /login` - 이메일 로그인
-- `POST /social/kakao` - 카카오 소셜 로그인
-- `POST /refresh` - 토큰 갱신
+- `POST /signup` - 회원가입 (이메일/비밀번호)
+- `POST /login` - 로그인
+- `POST /refresh` - 액세스 토큰 갱신
 - `POST /logout` - 로그아웃
 
 ### 사용자 API (`/api/v1/users`)
@@ -137,70 +137,78 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `GET /me` - 내 프로필 조회
 - `PATCH /me` - 프로필 수정
 - `DELETE /me` - 회원 탈퇴
-- `GET /me/workouts` - 내 운동 기록
-- `GET /me/saved-routes` - 저장한 경로
-- `GET /me/statistics` - 통계 대시보드
+- `GET /me/workouts` - 내 운동 기록 목록
+- `GET /me/saved-routes` - 저장한 경로 목록
 
 ### 경로 API (`/api/v1/routes`)
 
-- `POST /generate` - 경로 생성 요청
-- `GET /generate/{task_id}` - 생성 상태 조회
-- `GET /{route_id}/options` - 경로 옵션 조회
-- `GET /{route_id}/options/{option_id}` - 상세 조회
+- `POST /generate` - 경로 생성 요청 (비동기)
+- `GET /generate/{task_id}` - 경로 생성 상태 조회
+- `GET /{route_id}/options` - 경로 옵션 목록 조회 (3개)
+- `GET /{route_id}/options/{option_id}` - 옵션 상세 조회
 - `POST /{route_id}/save` - 경로 저장
-- `DELETE /{route_id}/save` - 저장 취소
+- `DELETE /saved-routes/{saved_route_id}` - 저장 취소
 - `GET /shapes` - 모양 템플릿 목록
 
 ### 운동 API (`/api/v1/workouts`)
 
 - `POST /start` - 운동 시작
-- `POST /{id}/track` - 실시간 트래킹
+- `POST /{id}/track` - 실시간 위치 트래킹
 - `POST /{id}/pause` - 일시정지
 - `POST /{id}/resume` - 재개
 - `POST /{id}/complete` - 운동 완료
 - `DELETE /{id}` - 운동 취소
 - `GET /{id}` - 운동 상세 조회
+- `GET /current/status` - 현재 진행 중인 운동 확인
 
 ### 커뮤니티 API (`/api/v1/community`)
 
-- `GET /feed` - 피드 조회
+- `GET /feed` - 피드 조회 (최신순/인기순/트렌딩)
 - `POST /posts` - 게시글 작성
-- `GET /posts/{id}` - 상세 조회
-- `PATCH /posts/{id}` - 수정
-- `DELETE /posts/{id}` - 삭제
+- `GET /posts/{id}` - 게시글 상세 조회
+- `PATCH /posts/{id}` - 게시글 수정
+- `DELETE /posts/{id}` - 게시글 삭제
 - `POST /posts/{id}/like` - 좋아요
+- `DELETE /posts/{id}/like` - 좋아요 취소
 - `POST /posts/{id}/bookmark` - 북마크
+- `DELETE /posts/{id}/bookmark` - 북마크 취소
 - `POST /posts/{id}/comments` - 댓글 작성
-- `POST /users/{id}/follow` - 팔로우
+- `DELETE /comments/{id}` - 댓글 삭제
+- `POST /comments/{id}/like` - 댓글 좋아요
+- `GET /bookmarks` - 내 북마크 목록
 
 ## 🗄️ 데이터베이스
 
-- **DBMS**: MariaDB (AWS RDS)
-- **ORM**: SQLAlchemy
-- **마이그레이션**: Alembic (추후 추가 예정)
+- **DBMS**: MariaDB
+- **ORM**: SQLAlchemy 2.0
+- **마이그레이션**: 수동 관리 (Alembic 추후 도입 예정)
 
 ### 주요 테이블
 
-- `users` - 사용자 정보
-- `user_stats` - 사용자 통계
-- `refresh_tokens` - 리프레시 토큰
-- `shapes` - 모양 템플릿
+**사용자 관련:**
+
+- `users` - 사용자 기본 정보 (이메일, 이름, 프로필 이미지 등)
+- `user_stats` - 사용자 통계 (총 거리, 운동 횟수, 완주 경로 수)
+- `user_settings` - 사용자 설정 (다크모드, 자동랩 등)
+- `emergency_contacts` - 긴급 연락처
+- `refresh_tokens` - JWT 리프레시 토큰
+
+**경로 관련:**
+
+- `route_shapes` - 모양 템플릿 (하트, 별, 원 등)
 - `routes` - 생성된 경로
-- `route_options` - 경로 옵션
-- `saved_routes` - 저장된 경로
-- `workouts` - 운동 기록
-- `workout_tracks` - 운동 트래킹 데이터
-- `posts` - 커뮤니티 게시글
-- `comments` - 댓글
-- `follows` - 팔로우 관계
+- `route_options` - 경로 옵션 (안전 우선, 균형, 경치 우선 등 3가지)
+- `saved_routes` - 사용자가 저장한 경로
+- `route_generation_tasks` - 경로 생성 비동기 작업
+- `places` - 주변 장소 정보
+- `recommended_routes` - 추천 경로
 
-## 📝 코딩 컨벤션
+**운동 관련:**
 
-- 변수명/함수명: `snake_case`
-- 클래스명: `PascalCase`
-- 상수: `UPPER_SNAKE_CASE`
-- 모든 함수에 타입 힌트 사용
-- 중요한 로직에는 반드시 주석 작성
+- `workouts` - 운동 기록 (거리, 시간, 칼로리, 경로 데이터 등)
+- `workout_splits` - 구간별 기록 (1km, 2km, ...)
+
+- 각 파일 상단에 파일 설명 주석 작성
 
 ## 🔧 개발 시 참고사항
 
@@ -218,6 +226,43 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 2. `config.py`에 설정 클래스 수정
 3. README에 설명 추가
 
----
+## 🚨 주요 변경사항 (v2.0)
 
-Made with ❤️ by RunnerWay Team
+- ✅ 이메일/비밀번호 로그인만 지원 (카카오 소셜 로그인 제거)
+- ✅ 뱃지/업적 시스템 제거
+- ✅ 팔로우 기능 제거
+- ✅ 운동 트래킹 데이터를 `workouts.path_data` JSON 필드로 통합
+- ✅ 경유지(waypoints) 테이블 제거
+- ✅ 필드명 변경: `avatar` → `avatar_url`, `svg_template` → `svg_url`
+- ✅ UserStats 간소화: `total_calories`, `total_duration` 제거
+
+## 🐛 디버깅
+
+### DB 연결 테스트
+
+```bash
+python scripts/check_db.py
+```
+
+### 로그 확인
+
+```bash
+# 앱 로그는 콘솔에 출력됨
+# 필요시 파일 로깅 추가 가능
+```
+
+### 새로운 API 추가 시
+
+1. `schemas/`에 요청/응답 스키마 정의
+2. `models/`에 필요한 모델 추가
+3. `services/`에 비즈니스 로직 구현
+4. `api/v1/`에 엔드포인트 추가
+5. `api/v1/router.py`에 라우터 등록
+
+### 환경 변수 추가 시
+
+1. `.env.example`에 예시 추가
+2. `config.py`에 설정 클래스 수정
+3. README에 설명 추가
+
+---

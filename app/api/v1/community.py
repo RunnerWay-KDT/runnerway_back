@@ -14,7 +14,7 @@ from datetime import datetime
 from app.db.database import get_db
 from app.api.deps import get_current_user, get_current_user_optional
 from app.models.user import User
-from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike, Follow
+from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike
 from app.schemas.community import (
     PostCreateRequest, PostUpdateRequest,
     PostSchema, PostDetailSchema,
@@ -63,13 +63,6 @@ def get_feed(
     query = db.query(Post).filter(
         Post.deleted_at.is_(None)
     )
-    
-    # 팔로우한 사용자 필터
-    if following and current_user:
-        following_ids = db.query(Follow.following_id).filter(
-            Follow.follower_id == current_user.id
-        ).subquery()
-        query = query.filter(Post.user_id.in_(following_ids))
     
     # 타입 필터
     if type and type != "all":
@@ -120,7 +113,7 @@ def get_feed(
             author={
                 "id": post.author.id,
                 "name": post.author.name,
-                "avatar": post.author.avatar
+                "avatar_url": post.author.avatar_url
             },
             content=post.content,
             images=post.images or [],
@@ -291,7 +284,7 @@ def get_post_detail(
                 "author": {
                     "id": reply.author.id,
                     "name": reply.author.name,
-                    "avatar": reply.author.avatar
+                    "avatar_url": reply.author.avatar_url
                 },
                 "content": reply.content,
                 "like_count": reply.like_count,
@@ -303,7 +296,7 @@ def get_post_detail(
             "author": {
                 "id": comment.author.id,
                 "name": comment.author.name,
-                "avatar": comment.author.avatar
+                "avatar_url": comment.author.avatar_url
             },
             "content": comment.content,
             "like_count": comment.like_count,
@@ -320,7 +313,7 @@ def get_post_detail(
                 "author": {
                     "id": post.author.id,
                     "name": post.author.name,
-                    "avatar": post.author.avatar
+                    "avatar_url": post.author.avatar_url
                 },
                 "content": post.content,
                 "images": post.images or [],
@@ -802,103 +795,6 @@ def like_comment(
 
 
 # ============================================
-# 사용자 팔로우
-# ============================================
-@router.post(
-    "/users/{user_id}/follow",
-    response_model=CommonResponse,
-    summary="사용자 팔로우",
-    description="다른 사용자를 팔로우합니다."
-)
-def follow_user(
-    user_id: int = Path(..., description="팔로우할 사용자 ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """사용자 팔로우 엔드포인트"""
-    
-    # 자기 자신 팔로우 방지
-    if user_id == current_user.id:
-        raise ValidationException(
-            message="자기 자신을 팔로우할 수 없습니다",
-            field="user_id"
-        )
-    
-    # 대상 사용자 존재 확인
-    target_user = db.query(User).filter(
-        User.id == user_id,
-        User.deleted_at.is_(None)
-    ).first()
-    
-    if not target_user:
-        raise NotFoundException(
-            resource="User",
-            resource_id=user_id
-        )
-    
-    # 이미 팔로우했는지 확인
-    existing = db.query(Follow).filter(
-        Follow.follower_id == current_user.id,
-        Follow.following_id == user_id
-    ).first()
-    
-    if existing:
-        raise ValidationException(
-            message="이미 팔로우한 사용자입니다",
-            field="user_id"
-        )
-    
-    # 팔로우 추가
-    follow = Follow(
-        follower_id=current_user.id,
-        following_id=user_id
-    )
-    db.add(follow)
-    db.commit()
-    
-    return CommonResponse(
-        success=True,
-        message="팔로우했습니다"
-    )
-
-
-# ============================================
-# 사용자 언팔로우
-# ============================================
-@router.delete(
-    "/users/{user_id}/follow",
-    response_model=CommonResponse,
-    summary="사용자 언팔로우",
-    description="팔로우를 취소합니다."
-)
-def unfollow_user(
-    user_id: int = Path(..., description="언팔로우할 사용자 ID"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """사용자 언팔로우 엔드포인트"""
-    
-    follow = db.query(Follow).filter(
-        Follow.follower_id == current_user.id,
-        Follow.following_id == user_id
-    ).first()
-    
-    if not follow:
-        raise NotFoundException(
-            resource="Follow",
-            resource_id=user_id
-        )
-    
-    db.delete(follow)
-    db.commit()
-    
-    return CommonResponse(
-        success=True,
-        message="언팔로우했습니다"
-    )
-
-
-# ============================================
 # 내 북마크 목록
 # ============================================
 @router.get(
@@ -931,7 +827,7 @@ def get_my_bookmarks(
                 "author": {
                     "id": post.author.id,
                     "name": post.author.name,
-                    "avatar": post.author.avatar
+                    "avatar_url": post.author.avatar_url
                 },
                 "content": post.content[:100] + "..." if len(post.content) > 100 else post.content,
                 "images": post.images[:1] if post.images else [],

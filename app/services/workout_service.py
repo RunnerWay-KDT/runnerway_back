@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.models.user import User, UserStats
-from app.models.workout import Workout, WorkoutTrack, WorkoutSplit, WorkoutAchievement
+from app.models.workout import Workout, WorkoutSplit
 from app.models.route import RouteOption
 from app.core.exceptions import NotFoundException, ValidationException
 
@@ -77,9 +77,6 @@ class WorkoutService:
         
         # 경로 옵션 정보 조회
         route_name = None
-        shape_id = None
-        shape_name = None
-        shape_icon = None
         
         if option_id:
             option = self.db.query(RouteOption).filter(
@@ -88,10 +85,6 @@ class WorkoutService:
             
             if option and option.route:
                 route_name = option.route.name
-                if option.route.shape:
-                    shape_id = option.route.shape.id
-                    shape_name = option.route.shape.name
-                    shape_icon = option.route.shape.icon_name
         
         # 운동 세션 생성
         workout = Workout(
@@ -100,9 +93,6 @@ class WorkoutService:
             route_id=route_id,
             route_option_id=option_id,
             route_name=route_name,
-            shape_id=shape_id,
-            shape_name=shape_name,
-            shape_icon=shape_icon,
             status="active",
             started_at=datetime.utcnow()
         )
@@ -296,17 +286,17 @@ class WorkoutService:
                 resource_id=workout_id
             )
         
-        # 좌표 데이터 저장
+        # 좌표 데이터 저장 (path_data JSON 필드에)
+        existing_path = workout.path_data or {"coordinates": []}
         for coord in coordinates:
-            track = WorkoutTrack(
-                workout_id=workout_id,
-                latitude=coord.get("lat"),
-                longitude=coord.get("lng"),
-                altitude=coord.get("altitude"),
-                speed=coord.get("speed"),
-                timestamp=coord.get("timestamp", datetime.utcnow())
-            )
-            self.db.add(track)
+            existing_path["coordinates"].append({
+                "lat": coord.get("lat"),
+                "lng": coord.get("lng"),
+                "altitude": coord.get("altitude"),
+                "speed": coord.get("speed"),
+                "timestamp": coord.get("timestamp", datetime.utcnow().isoformat())
+            })
+        workout.path_data = existing_path
         
         # 현재 상태 업데이트
         if current_distance:
@@ -414,19 +404,23 @@ class WorkoutService:
         ).first()
     
     
-    def get_workout_tracks(self, workout_id: int) -> List[WorkoutTrack]:
+    def get_workout_tracks(self, workout_id: int) -> List[Dict]:
         """
-        운동 트래킹 데이터 조회
+        운동 트래킹 데이터 조회 (path_data JSON에서)
         
         Args:
             workout_id: 운동 ID
         
         Returns:
-            List[WorkoutTrack]: 트래킹 데이터 목록
+            List[Dict]: 트래킹 데이터 목록
         """
-        return self.db.query(WorkoutTrack).filter(
-            WorkoutTrack.workout_id == workout_id
-        ).order_by(WorkoutTrack.timestamp).all()
+        workout = self.db.query(Workout).filter(
+            Workout.id == workout_id
+        ).first()
+        
+        if workout and workout.path_data:
+            return workout.path_data.get("coordinates", [])
+        return []
     
     
     def get_workout_splits(self, workout_id: int) -> List[WorkoutSplit]:
@@ -493,15 +487,14 @@ class WorkoutService:
         if stats:
             stats.total_distance += float(workout.distance) if workout.distance else 0
             stats.total_workouts += 1
-            stats.total_calories += workout.calories or 0
-            stats.total_duration += workout.duration or 0
+            if workout.status == "completed":
+                stats.completed_routes += 1
         else:
             stats = UserStats(
                 user_id=user_id,
                 total_distance=float(workout.distance) if workout.distance else 0,
                 total_workouts=1,
-                total_calories=workout.calories or 0,
-                total_duration=workout.duration or 0
+                completed_routes=1 if workout.status == "completed" else 0
             )
             self.db.add(stats)
     
