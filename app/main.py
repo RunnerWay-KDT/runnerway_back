@@ -162,5 +162,6 @@ if __name__ == "__main__":
         "app.main:app",  # 앱 경로 (모듈:변수)
         host="0.0.0.0",  # 모든 IP에서 접속 허용
         port=8000,        # 포트 번호
-        reload=True       # 코드 변경 시 자동 재시작
+        reload=True,       # 코드 변경 시 자동 재시작
+        reload_excludes=["venv/*"]  # venv 폴더는 제외
     )

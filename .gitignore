@@ -125,6 +125,7 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+cache/
 
 # --------------------------------------------
 # Jupyter Notebook

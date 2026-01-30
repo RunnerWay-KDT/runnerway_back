@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-super-secret-key-change-this-in-production"
     
     # CORS 허용 도메인 (프론트엔드 주소)
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:19006"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:19006,http://localhost:8081"
     
     # API 버전 프리픽스
     API_V1_PREFIX: str = "/api/v1"
@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # --------------------------------------------
     # 로그 레벨
     LOG_LEVEL: str = "DEBUG"
+
+    # OpenAI API Key
+    OPENAI_API_KEY: str = ""
     
     @property
     def DATABASE_URL(self) -> str:

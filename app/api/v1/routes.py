@@ -20,10 +20,32 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema
+    RouteSaveRequest, RouteSaveResponse,
+    RouteOptionSchema, RoutePointSchema,
+    RouteRecommendRequest, RouteRecommendResponse
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
+import osmnx as ox
+import networkx as nx
+import openai
+import logging
+import random
+import math
+import time
+import os
+from dotenv import load_dotenv
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
+
+# OSMnx 설정
+ox.settings.use_cache = True
+ox.settings.log_console = False
+
+# OpenAI 설정
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -564,3 +586,238 @@ def recommend_waypoints(
         "data": {"waypoints": recommended},
         "message": "경유지 추천 완료"
     }
+
+
+# ============================================
+# 경로 추천 (Server.py 로직 이관)
+# ============================================
+@router.post(
+    "/recommend",
+    response_model=RouteRecommendResponse,
+    summary="AI 경로 추천",
+    description="GPT와 OSMnx를 사용하여 사용자 맞춤형 경로를 추천합니다."
+)
+async def recommend_route(request: RouteRecommendRequest):
+    """
+    AI 기반 경로 추천 엔드포인트
+    (거리/시간 정확도 개선)
+    """
+    from app.services.road_network import RoadNetworkFetcher
+    
+    user_location = (request.lat, request.lng)
+    
+    # 1. 목표 거리 설정 (컨디션 기반 또는 GPT)
+    target_dist_km = request.target_distance_km
+    
+    # 0. 프롬프트 기반 난이도/거리 설정 (GPT 제거 -> 키워드 매칭)
+    # Frontend sends constructed prompts like "목적: 회복 러닝..."
+    if request.prompt:
+        p = request.prompt.lower()
+        if "recovery" in p or "회복" in p or "easy" in p:
+            if not target_dist_km: target_dist_km = random.uniform(2.0, 3.0) 
+            condition = "recovery"
+        elif "fat" in p or "지방" in p or "burn" in p:
+            # 지방 연소 난이도 하향 조정 (3.5 ~ 4.5km)
+            if not target_dist_km: target_dist_km = random.uniform(3.5, 4.5)
+            condition = "fat-burn"
+        elif "challenge" in p or "기록" in p or "hard" in p:
+            if not target_dist_km: target_dist_km = random.uniform(7.0, 10.0) 
+            condition = "challenge"
+        else:
+            condition = "normal"
+
+    # 거리가 여전히 없으면 기본값 (Fallback)
+    if not target_dist_km or target_dist_km == 0.0:
+        target_dist_km = 3.0
+
+    logger.info(f"Processing request: {user_location}, distance: {target_dist_km}km")
+    
+    candidates = []
+
+    try:
+        # 1. RoadNetworkFetcher 초기화 및 그래프 다운로드
+        fetcher = RoadNetworkFetcher()
+        
+        # radius_meter 계산 (여유있게 설정하되 너무 크면 타임아웃 발생)
+        # 10km 코스(반경 5km)의 경우 데이터가 매우 큼. 
+        # 안전 계수를 1.5 -> 1.1로 줄여서 데이터 양 최적화
+        radius_meter = (target_dist_km / 2) * 1000 * 1.1
+        if radius_meter < 1500: radius_meter = 1500
+        
+        # 5km 이상 반경(즉 10km 코스)일 경우 타임아웃 방지를 위해 약간 더 축소하거나 경고
+        if radius_meter > 5000:
+            radius_meter = 5000 # Max cap per request for performance safety
+        
+        logger.info(f"Fetching network with radius {radius_meter}m using RoadNetworkFetcher...")
+        G = fetcher.fetch_pedestrian_network_from_point(
+            center_point=user_location,
+            distance=radius_meter
+        )
+        
+        # 출발지 노드 찾기
+        orig_node = ox.distance.nearest_nodes(G, user_location[1], user_location[0])
+        
+        # 3. 3방향 (0도, 120도, 240도) 반환점 찾기
+        offset = random.uniform(0, 60)
+        bearings = [(0 + offset) % 360, (120 + offset) % 360, (240 + offset) % 360] 
+        route_names = ["Route A", "Route B", "Route C"]
+        
+        # 난이도별 거리 계수 (쉬움: 0.85배, 보통: 1.0배, 도전: 1.15배) -> 차이 명확화
+        dist_multipliers = [0.85, 1.0, 1.15]
+        
+        for i, bearing in enumerate(bearings):
+            logger.info(f"Generating route {i+1} for bearing {bearing}...")
+            
+            # 현재 순번의 목표 거리 및 반경 재계산
+            current_target_km = target_dist_km * dist_multipliers[i]
+            
+            # 도로 굴곡도 약 1.3 가정
+            tortuosity_factor = 1.3
+            current_target_radius_m = (current_target_km * 1000 / 2) / tortuosity_factor
+            
+            # 해당 방향에 있는 노드들 중 적절한 거리의 노드 찾기
+            min_dist = current_target_radius_m * 0.85
+            max_dist = current_target_radius_m * 1.15
+            
+            candidate_nodes = []
+             
+            for node, data in G.nodes(data=True):
+                node_lat = data['lat']
+                node_lng = data['lon']
+                
+                # 거리 계산
+                dist = ox.distance.great_circle(user_location[0], user_location[1], node_lat, node_lng)
+                
+                if min_dist <= dist <= max_dist:
+                     # 방위각 계산
+                     y = math.sin(math.radians(node_lng - user_location[1])) * math.cos(math.radians(node_lat))
+                     x = math.cos(math.radians(user_location[0])) * math.sin(math.radians(node_lat)) - \
+                         math.sin(math.radians(user_location[0])) * math.cos(math.radians(node_lat)) * \
+                         math.cos(math.radians(node_lng - user_location[1]))
+                     calc_bearing = math.degrees(math.atan2(y, x))
+                     calc_bearing = (calc_bearing + 360) % 360
+                     
+                     angle_diff = abs(calc_bearing - bearing)
+                     angle_diff = min(angle_diff, 360 - angle_diff)
+                     
+                     if angle_diff < 40: # 각도 조건 강화
+                         candidate_nodes.append((node, angle_diff, dist))
+            
+            # 가장 각도가 잘 맞는 노드 선택
+            if candidate_nodes:
+                candidate_nodes.sort(key=lambda x: x[1]) # 각도 차이 적은 순
+                dest_node = candidate_nodes[0][0]
+                actual_dist_straight = candidate_nodes[0][2]
+            else:
+                 # 실패 시 랜덤 선택 (거리 조건만 만족하는)
+                 possible_nodes = [
+                     n for n, d in G.nodes(data=True) 
+                     if min_dist <= ox.distance.great_circle(user_location[0], user_location[1], d['lat'], d['lon']) <= max_dist
+                 ]
+                 if possible_nodes:
+                     dest_node = random.choice(possible_nodes)
+                 else:
+                     continue 
+
+            # 경로 계산 (왕복)
+            try:
+                # 가는 길 (최단 경로)
+                # weight='length'를 사용하여 실제 거리 기반 최단 경로 탐색
+                route_to = nx.shortest_path(G, orig_node, dest_node, weight='length')
+                
+                # 오는 길 (가는 길 피해서)
+                # 엣지 가중치 페널티 부여
+                # 무방향 그래프(Graph)이므로 G[u][v]는 딕셔너리 ({'length': ...})
+                edges_to_penalize = []
+                
+                try:
+                    for u, v in zip(route_to[:-1], route_to[1:]):
+                         if G.has_edge(u, v):
+                             edge_data = G[u][v]
+                             # 만약 MultiGraph라면 key가 있음, Graph라면 바로 속성
+                             if isinstance(edge_data, dict) and 'length' in edge_data:
+                                 edges_to_penalize.append((u, v, edge_data['length']))
+                                 edge_data['length'] *= 10 # 10배 패널티
+                             else:
+                                 # MultiGraph 호환성
+                                 for key in edge_data:
+                                     if isinstance(edge_data[key], dict) and 'length' in edge_data[key]:
+                                         edges_to_penalize.append((u, v, key, edge_data[key]['length']))
+                                         edge_data[key]['length'] *= 10
+                    
+                    route_from = nx.shortest_path(G, dest_node, orig_node, weight='length')
+                    
+                except nx.NetworkXNoPath:
+                     route_from = route_to[::-1]
+                finally:
+                    # 패널티 복구
+                    for item in edges_to_penalize:
+                         if len(item) == 3:
+                             u, v, original_len = item
+                             G[u][v]['length'] = original_len
+                         elif len(item) == 4:
+                             u, v, key, original_len = item
+                             G[u][v][key]['length'] = original_len
+
+                if not route_from:
+                    route_from = route_to[::-1]
+
+                full_route = route_to + route_from[1:]
+                
+                # 실제 데이터 계산
+                real_distance_m = fetcher.calculate_path_distance(G, full_route)
+                real_distance_km = real_distance_m / 1000.0
+                
+                # 만약 계산된 거리가 너무 작으면(데이터 오류 등), 목표 거리를 대신 사용 (Fallback)
+                if real_distance_km < 0.1:
+                    logger.warning(f"Calculated distance too small ({real_distance_km}km). Using target {current_target_km}km instead.")
+                    real_distance_km = current_target_km
+
+                # 시간 계산 (평균 러닝 페이스 6분/km)
+                pace_min_per_km = 6.0 
+                est_time_min = int(real_distance_km * pace_min_per_km)
+                if est_time_min == 0: est_time_min = int(current_target_km * 6)
+                
+                # 좌표 변환
+                path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
+                
+                candidates.append({
+                    "id": i + 1,
+                    "name": route_names[i],
+                    "distance": f"{real_distance_km:.2f}km",
+                    "time": est_time_min,
+                    "path": path_coords
+                })
+
+            except Exception as e:
+                logger.error(f"Route calc failed for route {i}: {str(e)}", exc_info=True)
+                continue
+
+    except Exception as e:
+        logger.error(f"Error generation route: {str(e)}", exc_info=True)
+        # Main logic failed, but we continue to fallback below
+    
+    # 4. Fallback checking (Always runs, even if exception occurred above)
+    if not candidates:
+        logger.warning("No candidates generated via graph (or error occurred). Using fallback geometric generation via RoadNetworkFetcher.")
+        
+        # 3가지 옵션 생성
+        fallback_multipliers = [0.85, 1.0, 1.15]
+        route_names = ["Route A", "Route B", "Route C"]
+        
+        for i, mult in enumerate(fallback_multipliers):
+            dist_km = target_dist_km * mult
+            
+            # Use RoadNetworkFetcher for random loop calculation
+            # seed=i ensures differentiation between Route A, B, C
+            fallback_path = fetcher.generate_random_loop_route(user_location, dist_km, seed=i)
+            
+            candidates.append({
+                "id": i + 1,
+                "name": route_names[i],
+                "distance": f"{dist_km:.2f}km",
+                "time": int(dist_km * 6),
+                "path": fallback_path
+            })
+        
+    return {"candidates": candidates}
