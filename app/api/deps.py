@@ -53,17 +53,22 @@ def get_current_user(
     """
     # 1. 토큰 존재 확인
     if not credentials:
+        print("❌ [인증] credentials 없음")
         raise UnauthorizedException()
     
     token = credentials.credentials
+    print(f"🔑 [인증] 토큰 수신: {token[:20]}...")
     
     # 2. 토큰 검증
     user_id = verify_access_token(token)
     if not user_id:
+        print(f"❌ [인증] 토큰 검증 실패: {token[:20]}...")
         raise UnauthorizedException(
             message="유효하지 않은 토큰입니다",
             error_code="INVALID_TOKEN"
         )
+    
+    print(f"✅ [인증] 토큰 검증 성공: user_id={user_id}")
     
     # 3. 사용자 조회
     user = db.query(User).filter(
@@ -72,8 +77,10 @@ def get_current_user(
     ).first()
     
     if not user:
+        print(f"❌ [인증] 사용자를 찾을 수 없음: user_id={user_id}")
         raise UserNotFoundException()
     
+    print(f"✅ [인증] 사용자 조회 성공: {user.email}")
     return user
 
 
