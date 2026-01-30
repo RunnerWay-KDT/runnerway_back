@@ -309,6 +309,8 @@ class RouteCandidate(BaseModel):
     distance: str = Field(..., description="거리 (예: 3.5km)")
     time: int = Field(..., description="예상 소요 시간 (분)")
     path: List[Dict[str, float]] = Field(..., description="좌표 리스트")
+    reason: Optional[str] = Field(None, description="추천 사유 (예: 경사도 정보)")
+    elevation_stats: Optional[Dict[str, Any]] = Field(None, description="고도 통계 데이터")
 
 
 class RouteRecommendResponse(BaseModel):

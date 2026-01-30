@@ -142,6 +142,167 @@ class RoadNetworkFetcher:
 
         return G_undirected
 
+    # 고도 데이터 추가 (비동기 지원)
+    async def add_elevation_to_nodes_async(self, G: nx.Graph, api_key: Optional[str] = None) -> nx.Graph:
+        """
+        노드에 고도(elevation) 데이터를 비동기로 추가합니다.
+        """
+        if api_key:
+            logger.info("Using VWorld API for elevation (Async Parallel)...")
+            await self._add_vworld_elevation_async(G, api_key)
+        else:
+            logger.info("No API key provided. Using simulated elevation data.")
+            self._add_simulated_elevation(G)
+        return G
+
+    async def _add_vworld_elevation_async(self, G: nx.Graph, api_key: str):
+        """브이월드 API를 비동기 병렬로 호출하되, 샘플링을 통해 속도를 최적화합니다."""
+        import httpx
+        import asyncio
+        import random
+
+        # 1. 샘플링 대상 노드 선정 (모든 노드가 아닌 일부만 요청)
+        # 노드 수가 너무 많으면 성능 저하의 주범이 되므로, 최대 200개 정도로 제한하거나 5개 중 1개 선택
+        all_nodes = list(G.nodes())
+        if len(all_nodes) > 200:
+            sample_size = 200
+            request_nodes = random.sample(all_nodes, sample_size)
+            logger.info(f"Sampling {sample_size} nodes out of {len(all_nodes)} for elevation.")
+        else:
+            request_nodes = all_nodes
+            logger.info(f"Requesting elevation for all {len(all_nodes)} nodes.")
+
+        unique_coords = {}
+        for node in request_nodes:
+            data = G.nodes[node]
+            lat, lon = data['y'], data['x']
+            unique_coords[node] = (lat, lon)
+
+        coord_cache = {}
+        semaphore = asyncio.Semaphore(15) # 동시 요청 수 약간 상향
+
+        async def fetch_node_elevation(client, node, lat, lon):
+            cache_key = (round(lat, 5), round(lon, 5))
+            if cache_key in coord_cache:
+                return node, coord_cache[cache_key]
+
+            url = "https://api.vworld.kr/req/data"
+            params = {
+                "service": "data",
+                "request": "GetFeature",
+                "data": "LT_CH_DEM_10M",
+                "key": api_key,
+                "domain": "localhost",
+                "geomFilter": f"POINT({lon} {lat})"
+            }
+
+            async with semaphore:
+                for attempt in range(2):
+                    try:
+                        response = await client.get(url, params=params, timeout=5.0)
+                        if response.status_code == 200:
+                            res_json = response.json()
+                            if res_json.get("response", {}).get("status") == "OK":
+                                features = res_json.get("response", {}).get("result", {}).get("featureCollection", {}).get("features", [])
+                                if features:
+                                    height = features[0].get("properties", {}).get("height")
+                                    if height is not None:
+                                        elev = float(height)
+                                        coord_cache[cache_key] = elev
+                                        return node, elev
+                        
+                        await asyncio.sleep(0.1) # 짧은 대기
+                    except Exception:
+                        await asyncio.sleep(0.1)
+            
+            return node, 20.0 # 기본값
+
+        # 전체 과정에 15초 타임아웃 적용 (무한 대기 방지)
+        try:
+            async with httpx.AsyncClient() as client:
+                tasks = [fetch_node_elevation(client, node, lat, lon) for node, (lat, lon) in unique_coords.items()]
+                results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=15.0)
+
+            # 결과 반영
+            fetched_elevs = {}
+            for node, elev in results:
+                G.nodes[node]['elevation'] = elev
+                fetched_elevs[node] = elev
+
+            # 2. 샘플링되지 않은 노드들에 고도 채우기 (가장 가까운 샘플 노드 기반 또는 전체 평균)
+            avg_elev = sum(fetched_elevs.values()) / len(fetched_elevs) if fetched_elevs else 20.0
+            for node in all_nodes:
+                if 'elevation' not in G.nodes[node]:
+                    G.nodes[node]['elevation'] = avg_elev
+
+            logger.info(f"VWorld elevation update completed. Avg elevation: {avg_elev:.2f}m")
+            
+        except asyncio.TimeoutError:
+            logger.warning("VWorld elevation fetching timed out. Using default elevation for remaining nodes.")
+            # 타임아웃 시 기본값으로 모두 채움
+            for node in all_nodes:
+                if 'elevation' not in G.nodes[node]:
+                    G.nodes[node]['elevation'] = 20.0
+
+    def _add_simulated_elevation(self, G: nx.Graph):
+        """가상의 지형 굴곡을 노드에 부여합니다."""
+        import random
+        import math
+        
+        # 지역 전체의 기본 고도와 변화 진폭 설정
+        base_elevation = random.uniform(10, 50)
+        amplitude = random.uniform(5, 30)
+        frequency = random.uniform(500, 1500) # 지형 변화 주기 (미터)
+        
+        # 랜덤한 중심점 2~3개를 잡아 산/언덕처럼 표현
+        center_points = []
+        for _ in range(3):
+            random_node = random.choice(list(G.nodes()))
+            center_points.append((G.nodes[random_node]['y'], G.nodes[random_node]['x'], random.uniform(20, 100)))
+
+        for node, data in G.nodes(data=True):
+            lat, lon = data['y'], data['x']
+            # 기본적인 물결 모양 지형
+            elev = base_elevation + amplitude * math.sin(lat * frequency) * math.cos(lon * frequency)
+            
+            # 특정 지점을 언덕으로 설정
+            for c_lat, c_lon, height in center_points:
+                dist = ox.distance.great_circle(lat, lon, c_lat, c_lon)
+                if dist < 500: # 500m 반경 내 언덕 효과
+                    elev += height * (1 - (dist / 500))
+            
+            data['elevation'] = round(elev, 2)
+
+    # 엣지에 경사도 및 가중치 계산
+    def calculate_edge_grades_and_weights(self, G: nx.Graph):
+        """노드 간 고도 차이를 이용해 경사도(grade)를 구하고 가중치를 설정합니다."""
+        for u, v, data in G.edges(data=True):
+            # 노드 데이터 가져오기
+            node_u = G.nodes[u]
+            node_v = G.nodes[v]
+            
+            if 'elevation' in node_u and 'elevation' in node_v:
+                # 고도 차이 (미터)
+                elev_diff = node_v['elevation'] - node_u['elevation']
+                dist = data.get('length', 1.0)
+                if dist < 1.0: dist = 1.0 # 0 나누기 방지
+                
+                # 경사도 (%)
+                grade = (elev_diff / dist)
+                data['grade'] = grade
+                
+                # 가중치 계산 (보행자는 오르막/내리막 모두 힘듦)
+                abs_grade = abs(grade)
+                
+                # 쉬운 길 (경사도 기피): 경사가 급할수록 페널티 대폭 증가
+                data['weight_easy'] = dist * (1 + abs_grade * 20) 
+                # 어려운 길 (경사도 선호): 경사가 있을수록 거리를 짧게 인식하게 하여 선택 유도
+                data['weight_hard'] = dist * (1 + (0.5 - abs_grade) * 2) if abs_grade < 0.2 else dist
+            else:
+                data['grade'] = 0
+                data['weight_easy'] = data.get('length', 1.0)
+                data['weight_hard'] = data.get('length', 1.0)
+
     # 경로의 총 거리를 계산
     def calculate_path_distance(
         self,
@@ -227,6 +388,33 @@ class RoadNetworkFetcher:
                 logger.warning(f"Node {node_id} missing pos coordinate data")
 
         return coordinates
+
+    def get_elevation_stats(self, G: nx.Graph, path: List[int]) -> Dict:
+        """경로의 고도 통계(총 상승 고도, 평균 경사도 등)를 계산합니다."""
+        total_ascent = 0.0
+        grades = []
+        
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i+1]
+            node_u = G.nodes[u]
+            node_v = G.nodes[v]
+            
+            if 'elevation' in node_u and 'elevation' in node_v:
+                diff = node_v['elevation'] - node_u['elevation']
+                if diff > 0:
+                    total_ascent += diff
+                
+                # 경사도 수집
+                edge_data = G.get_edge_data(u, v)
+                if isinstance(edge_data, dict) and 'grade' in edge_data:
+                    grades.append(abs(edge_data['grade']))
+        
+        avg_grade = (sum(grades) / len(grades)) * 100 if grades else 0
+        
+        return {
+            "total_ascent": round(total_ascent, 2),
+            "average_grade": round(avg_grade, 2)
+        }
 
     def _validate_bbox(self, bbox: List[float]) -> None:
         # BBox 형식 검증

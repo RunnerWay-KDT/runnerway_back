@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # OpenAI API Key
     OPENAI_API_KEY: str = ""
     
+    # VWorld API Key
+    VWORLD_API_KEY: str = ""
+    
     @property
     def DATABASE_URL(self) -> str:
         """
