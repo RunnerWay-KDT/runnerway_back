@@ -225,17 +225,29 @@ def verify_access_token(token: str) -> Optional[str]:
     Returns:
         Optional[str]: 유효하면 user_id, 아니면 None
     """
-    payload = decode_token(token)
-    
-    if payload is None:
+    try:
+        print(f"🔍 [토큰검증] 토큰 디코딩 시작: {token[:20]}...")
+        payload = decode_token(token)
+        
+        if payload is None:
+            print("❌ [토큰검증] 토큰 디코딩 실패")
+            return None
+        
+        print(f"✅ [토큰검증] 토큰 디코딩 성공: {payload}")
+        
+        # 토큰 타입 확인 (access 토큰인지)
+        if payload.get("type") != "access":
+            print(f"❌ [토큰검증] 토큰 타입 불일치: {payload.get('type')}")
+            return None
+        
+        # user_id 반환 (sub 필드)
+        user_id = payload.get("sub")
+        print(f"✅ [토큰검증] user_id 추출 성공: {user_id}")
+        return user_id
+        
+    except Exception as e:
+        print(f"❌ [토큰검증] 예외 발생: {str(e)}")
         return None
-    
-    # 토큰 타입 확인 (access 토큰인지)
-    if payload.get("type") != "access":
-        return None
-    
-    # user_id 반환 (sub 필드)
-    return payload.get("sub")
 
 
 def verify_refresh_token(token: str) -> Optional[str]:

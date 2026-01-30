@@ -85,29 +85,14 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. 환경 변수 설정
-
-`.env.example` 파일을 복사해서 `.env` 파일을 만들고, 값을 채워주세요.
-
-```bash
-copy .env.example .env
-```
-
-### 4. 데이터베이스 초기화 및 시드 데이터
-
-```bash
-# 테이블 생성 및 초기 데이터 삽입
-python scripts/seed_data.py
-```
-
-### 5. 서버 실행
+### 3. 서버 실행
 
 ```bash
 # 개발 모드 (코드 변경 시 자동 재시작)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 6. API 문서 확인
+### 4. API 문서 확인
 
 서버 실행 후 브라우저에서:
 

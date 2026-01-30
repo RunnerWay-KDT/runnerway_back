@@ -62,6 +62,46 @@ class RoutePreferencesSchema(BaseModel):
 # 요청 스키마
 # ============================================
 
+class SaveCustomDrawingRequest(BaseModel):
+    """
+    커스텀 그림 저장 요청 스키마 (직접 그리기)
+    """
+    name: str = Field(..., description="경로 이름")
+    svg_path: str = Field(..., description="SVG Path 데이터")
+    location: LocationSchema = Field(..., description="시작 위치")
+    estimated_distance: Optional[float] = Field(None, description="예상 거리 (km)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "내가 그린 하트",
+                "svg_path": "M 100 100 L 150 150 L 200 100",
+                "location": {
+                    "latitude": 37.5665,
+                    "longitude": 126.9780,
+                    "address": "서울특별시 중구"
+                },
+                "estimated_distance": 3.5
+            }
+        }
+
+
+class SaveCustomDrawingResponse(BaseModel):
+    """커스텀 그림 저장 응답 스키마"""
+    route_id: str = Field(..., description="생성된 경로 ID")
+    name: str = Field(..., description="경로 이름")
+    svg_path: str = Field(..., description="저장된 SVG Path")
+    estimated_distance: Optional[float] = None
+    created_at: datetime
+
+
+class SaveCustomDrawingResponseWrapper(BaseModel):
+    """커스텀 그림 저장 응답 래퍼"""
+    success: bool = True
+    data: SaveCustomDrawingResponse
+    message: str = "커스텀 경로가 저장되었습니다"
+
+
 class RouteGenerateRequest(BaseModel):
     """
     경로 생성 요청 스키마

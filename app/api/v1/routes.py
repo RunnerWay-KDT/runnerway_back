@@ -20,7 +20,8 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema
+    RouteOptionSchema, RoutePointSchema,
+    SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
@@ -564,3 +565,86 @@ def recommend_waypoints(
         "data": {"waypoints": recommended},
         "message": "경유지 추천 완료"
     }
+
+
+# ============================================
+# 커스텀 그림 경로 저장
+# ============================================
+@router.post(
+    "/custom-drawing",
+    response_model=SaveCustomDrawingResponseWrapper,
+    status_code=status.HTTP_201_CREATED,
+    summary="커스텀 그림 경로 저장",
+    description="""
+    사용자가 직접 그린 경로를 SVG Path 형태로 저장합니다.
+    
+    **저장 정보:**
+    - SVG Path 데이터
+    - 시작 위치 (위도, 경도)
+    - 예상 거리
+    - 경로 이름
+    
+    **반환 데이터:**
+    - route_id: 생성된 경로 ID
+    - 저장된 경로 정보
+    """
+)
+def save_custom_drawing(
+    request: SaveCustomDrawingRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """커스텀 그림 경로 저장 엔드포인트"""
+    
+    try:
+        print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
+        print(f"📝 [경로저장] SVG Path 길이: {len(request.svg_path)} characters")
+        
+        # Route 생성
+        route = Route(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            name=request.name,
+            type="custom",  # 커스텀 그리기
+            mode="none",    # 도형 그리기 (운동 모드 없음)
+            start_latitude=request.location.latitude,
+            start_longitude=request.location.longitude,
+            custom_svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
+            status="active"
+        )
+        
+        print(f"✅ [경로저장] Route 객체 생성 완료: id={route.id}")
+        
+        db.add(route)
+        print(f"✅ [경로저장] DB에 추가 완료, commit 시도 중...")
+        
+        db.commit()
+        print(f"✅ [경로저장] Commit 성공!")
+        
+        db.refresh(route)
+        print(f"✅ [경로저장] Refresh 완료")
+        
+        return SaveCustomDrawingResponseWrapper(
+            success=True,
+            data=SaveCustomDrawingResponse(
+                route_id=route.id,
+                name=route.name,
+                svg_path=route.custom_svg_path,  # 컬럼명 수정
+                estimated_distance=request.estimated_distance,
+                created_at=route.created_at
+            ),
+            message="커스텀 경로가 성공적으로 저장되었습니다"
+        )
+        
+    except Exception as e:
+        print(f"❌ [경로저장] 에러 발생: {type(e).__name__}")
+        print(f"❌ [경로저장] 에러 메시지: {str(e)}")
+        import traceback
+        print(f"❌ [경로저장] 스택 트레이스:\n{traceback.format_exc()}")
+        
+        db.rollback()
+        raise ValidationException(
+            message=f"경로 저장 중 오류가 발생했습니다: {str(e)}",
+            field="route"
+        )
+
