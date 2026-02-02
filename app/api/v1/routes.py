@@ -649,10 +649,34 @@ async def recommend_route(request: RouteRecommendRequest):
             radius_meter = 5000 # Max cap per request for performance safety
         
         logger.info(f"Fetching network with radius {radius_meter}m using RoadNetworkFetcher...")
-        G = fetcher.fetch_pedestrian_network_from_point(
+        import asyncio
+        # OSMnx 호출은 CPU 및 I/O 집약적인 동기 함수이므로 쓰레드 풀에서 실행
+        G = await asyncio.to_thread(
+            fetcher.fetch_pedestrian_network_from_point,
             center_point=user_location,
             distance=radius_meter
         )
+        
+        # ----------------------------
+        # 경사도 로직 추가 (VWorld API 비동기 연동)
+        # ----------------------------
+        from app.config import settings
+        # 1. 고도 추가 (비동기 병렬 호출)
+        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY)
+        # 2. 경사도 및 가중치 계산
+        fetcher.calculate_edge_grades_and_weights(G)
+        
+        # 난이도에 따른 가중치 키 선택
+        weight_key = 'length'
+        if condition == "recovery":
+            weight_key = 'weight_easy'
+        elif condition == "challenge":
+            weight_key = 'weight_hard'
+        else:
+            weight_key = 'length'
+        
+        logger.info(f"Using weight key: {weight_key} for condition: {condition}")
+        # ----------------------------
         
         # 출발지 노드 찾기
         orig_node = ox.distance.nearest_nodes(G, user_location[1], user_location[0])
@@ -721,9 +745,8 @@ async def recommend_route(request: RouteRecommendRequest):
 
             # 경로 계산 (왕복)
             try:
-                # 가는 길 (최단 경로)
-                # weight='length'를 사용하여 실제 거리 기반 최단 경로 탐색
-                route_to = nx.shortest_path(G, orig_node, dest_node, weight='length')
+                # weight=weight_key를 사용하여 실제 거리 기반 또는 난이도 기반 최단 경로 탐색
+                route_to = nx.shortest_path(G, orig_node, dest_node, weight=weight_key)
                 
                 # 오는 길 (가는 길 피해서)
                 # 엣지 가중치 페널티 부여
@@ -735,17 +758,17 @@ async def recommend_route(request: RouteRecommendRequest):
                          if G.has_edge(u, v):
                              edge_data = G[u][v]
                              # 만약 MultiGraph라면 key가 있음, Graph라면 바로 속성
-                             if isinstance(edge_data, dict) and 'length' in edge_data:
-                                 edges_to_penalize.append((u, v, edge_data['length']))
-                                 edge_data['length'] *= 10 # 10배 패널티
+                             if isinstance(edge_data, dict) and weight_key in edge_data:
+                                 edges_to_penalize.append((u, v, edge_data[weight_key]))
+                                 edge_data[weight_key] *= 10 # 10배 패널티
                              else:
                                  # MultiGraph 호환성
                                  for key in edge_data:
-                                     if isinstance(edge_data[key], dict) and 'length' in edge_data[key]:
-                                         edges_to_penalize.append((u, v, key, edge_data[key]['length']))
-                                         edge_data[key]['length'] *= 10
+                                     if isinstance(edge_data[key], dict) and weight_key in edge_data[key]:
+                                         edges_to_penalize.append((u, v, key, edge_data[key][weight_key]))
+                                         edge_data[key][weight_key] *= 10
                     
-                    route_from = nx.shortest_path(G, dest_node, orig_node, weight='length')
+                    route_from = nx.shortest_path(G, dest_node, orig_node, weight=weight_key)
                     
                 except nx.NetworkXNoPath:
                      route_from = route_to[::-1]
@@ -753,11 +776,11 @@ async def recommend_route(request: RouteRecommendRequest):
                     # 패널티 복구
                     for item in edges_to_penalize:
                          if len(item) == 3:
-                             u, v, original_len = item
-                             G[u][v]['length'] = original_len
+                             u, v, original_val = item
+                             G[u][v][weight_key] = original_val
                          elif len(item) == 4:
-                             u, v, key, original_len = item
-                             G[u][v][key]['length'] = original_len
+                             u, v, key, original_val = item
+                             G[u][v][key][weight_key] = original_val
 
                 if not route_from:
                     route_from = route_to[::-1]
@@ -780,13 +803,16 @@ async def recommend_route(request: RouteRecommendRequest):
                 
                 # 좌표 변환
                 path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
+                stats = fetcher.get_elevation_stats(G, full_route)
                 
                 candidates.append({
                     "id": i + 1,
                     "name": route_names[i],
                     "distance": f"{real_distance_km:.2f}km",
                     "time": est_time_min,
-                    "path": path_coords
+                    "path": path_coords,
+                    "reason": f"획득고도: {stats['total_ascent']}m, 평균경사도: {stats['average_grade']}%",
+                    "elevation_stats": stats
                 })
 
             except Exception as e:
