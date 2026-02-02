@@ -353,6 +353,13 @@ class RouteCandidate(BaseModel):
     elevation_stats: Optional[Dict[str, Any]] = Field(None, description="고도 통계 데이터")
 
 
+
 class RouteRecommendResponse(BaseModel):
     """경로 추천 응답 스키마"""
     candidates: List[RouteCandidate] = Field(..., description="추천된 경로 후보 리스트 (3개)")
+
+class ElevationPrefetchRequest(BaseModel):
+    """고도 데이터 프리페칭 요청 스키마"""
+    lat: float = Field(..., description="중심 위도")
+    lng: float = Field(..., description="중심 경도")
+    radius: float = Field(2000, description="수집 반경(m)")

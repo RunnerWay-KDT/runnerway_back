@@ -13,8 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 # API 라우터 불러오기
 from app.api.v1.router import api_router
-# 데이터베이스 초기화 함수
-from app.db.database import create_tables
 
 
 @asynccontextmanager
@@ -33,10 +31,6 @@ async def lifespan(app: FastAPI):
     print("🚀 러너웨이 서버를 시작합니다...")
     print(f"📦 환경: {settings.ENVIRONMENT}")
     print(f"🔧 디버그 모드: {settings.DEBUG}")
-    
-    # 데이터베이스 테이블 생성 (주석 처리 - 수동으로 관리)
-    # create_tables()
-    # print("✅ 데이터베이스 테이블 초기화 완료")
     
     yield  # 여기서 서버가 실행됩니다
     

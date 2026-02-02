@@ -1,6 +1,7 @@
 import osmnx as ox
 import networkx as nx
 from typing import Tuple, List, Optional, Dict
+from sqlalchemy.orm import Session
 import logging
 from math import radians, cos, sin, asin, sqrt
 
@@ -143,12 +144,35 @@ class RoadNetworkFetcher:
         return G_undirected
 
     # 고도 데이터 추가 (비동기 지원)
-    async def add_elevation_to_nodes_async(self, G: nx.Graph, api_key: Optional[str] = None) -> nx.Graph:
+    async def add_elevation_to_nodes_async(
+        self, 
+        G: nx.Graph, 
+        api_key: Optional[str] = None,
+        db: Optional[Session] = None
+    ) -> nx.Graph:
         """
-        노드에 고도(elevation) 데이터를 비동기로 추가합니다.
+        노드에 고도(elevation) 데이터를 비동기로 추가합니다 (캐시 우선).
         """
-        if api_key:
-            logger.info("Using VWorld API for elevation (Async Parallel)...")
+        if api_key and db:
+            logger.info("Using ElevationService with DB Cache...")
+            from app.services.elevation_service import ElevationService
+            elevation_service = ElevationService(db, api_key)
+            
+            # 모든 노드 좌표 추출
+            all_nodes = list(G.nodes())
+            coordinates = [(G.nodes[node]['y'], G.nodes[node]['x']) for node in all_nodes]
+            
+            # 배치 조회 (캐시 활용)
+            elevations = await elevation_service.get_elevations_batch(coordinates)
+            
+            # 노드에 반영
+            for node in all_nodes:
+                lat, lon = G.nodes[node]['y'], G.nodes[node]['x']
+                G.nodes[node]['elevation'] = elevations.get((lat, lon), 20.0)
+                
+            logger.info(f"Elevation update completed using cache/API.")
+        elif api_key:
+            logger.info("Using VWorld API for elevation (No DB Cache)...")
             await self._add_vworld_elevation_async(G, api_key)
         else:
             logger.info("No API key provided. Using simulated elevation data.")

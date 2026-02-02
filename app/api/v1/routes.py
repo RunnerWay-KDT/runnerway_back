@@ -22,19 +22,18 @@ from app.schemas.route import (
     RouteSaveRequest, RouteSaveResponse,
     RouteSaveRequest, RouteSaveResponse,
     RouteOptionSchema, RoutePointSchema,
-    RouteRecommendRequest, RouteRecommendResponse
+    RouteRecommendRequest, RouteRecommendResponse,
+    ElevationPrefetchRequest
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
 import osmnx as ox
 import networkx as nx
-import openai
 import logging
 import random
 import math
 import time
 import os
-from dotenv import load_dotenv
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -43,9 +42,6 @@ logger = logging.getLogger(__name__)
 ox.settings.use_cache = True
 ox.settings.log_console = False
 
-# OpenAI 설정
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -597,7 +593,10 @@ def recommend_waypoints(
     summary="AI 경로 추천",
     description="GPT와 OSMnx를 사용하여 사용자 맞춤형 경로를 추천합니다."
 )
-async def recommend_route(request: RouteRecommendRequest):
+async def recommend_route(
+    request: RouteRecommendRequest,
+    db: Session = Depends(get_db)  # DB 세션 주입
+):
     """
     AI 기반 경로 추천 엔드포인트
     (거리/시간 정확도 개선)
@@ -662,7 +661,7 @@ async def recommend_route(request: RouteRecommendRequest):
         # ----------------------------
         from app.config import settings
         # 1. 고도 추가 (비동기 병렬 호출)
-        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY)
+        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY, db=db)
         # 2. 경사도 및 가중치 계산
         fetcher.calculate_edge_grades_and_weights(G)
         
@@ -847,3 +846,70 @@ async def recommend_route(request: RouteRecommendRequest):
             })
         
     return {"candidates": candidates}
+
+
+# ============================================
+# 고도 데이터 프리페칭 (Pre-fetching)
+# ============================================
+@router.post(
+    "/prefetch-elevation",
+    response_model=CommonResponse,
+    summary="고도 데이터 미리 수집",
+    description="사용자가 위치를 설정했을 때 주변 고도 데이터를 백그라운드에서 미리 수집하여 캐싱합니다."
+)
+async def prefetch_elevation(
+    request: ElevationPrefetchRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    사용자가 경로 설정을 완료하기 전에 미리 데이터를 채움
+    """
+    logger.info(f"Prefetching elevation for ({request.lat}, {request.lng}) with radius {request.radius}m")
+    
+    # 실제 수집 로직은 백그라운드 태스크로 넘겨서 사용자 응답 지연 방지
+    background_tasks.add_task(
+        run_elevation_prefetch,
+        request.lat,
+        request.lng,
+        request.radius,
+        db
+    )
+    
+    return {
+        "success": True,
+        "message": "고도 데이터 프리페칭을 시작했습니다 (백그라운드)"
+    }
+
+
+async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Session = None):
+    """백그라운드에서 실행되는 실제 수집 로직"""
+    from app.services.road_network import RoadNetworkFetcher
+    from app.config import settings
+    from app.db.database import SessionLocal  # 새로운 세션 생성용
+    import asyncio
+    
+    # 백그라운드 작업은 별도의 DB 세션을 사용하는 것이 안전함
+    # 의존성 주입된 db가 이미 닫혔을 수 있기 때문
+    local_db = SessionLocal()
+    
+    try:
+        fetcher = RoadNetworkFetcher()
+        # 1. 주변 도로 네트워크 가져오기
+        G = await asyncio.to_thread(
+            fetcher.fetch_pedestrian_network_from_point,
+            center_point=(lat, lng),
+            distance=radius
+        )
+        
+        # 2. 고도 수집 및 DB 저장 호출
+        # 독립 세션(local_db) 전달
+        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY, db=local_db)
+        
+        logger.info(f"Background prefetch completed for ({lat}, {lng})")
+        
+    except Exception as e:
+        logger.error(f"Error during background elevation prefetch: {e}")
+    finally:
+        # 사용 완료한 세션 닫기
+        local_db.close()

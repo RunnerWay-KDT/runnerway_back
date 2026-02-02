@@ -89,8 +89,6 @@ class Settings(BaseSettings):
     # 로그 레벨
     LOG_LEVEL: str = "DEBUG"
 
-    # OpenAI API Key
-    OPENAI_API_KEY: str = ""
     
     # VWorld API Key
     VWORLD_API_KEY: str = ""
@@ -133,6 +131,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"
 
 
 @lru_cache()
