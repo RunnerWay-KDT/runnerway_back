@@ -50,7 +50,6 @@ class User(Base):
     # ========== 관계 정의 ==========
     stats = relationship("UserStats", back_populates="user", uselist=False, lazy="joined")
     settings = relationship("UserSettings", back_populates="user", uselist=False, lazy="joined")
-    emergency_contacts = relationship("EmergencyContact", back_populates="user", lazy="select")
     refresh_tokens = relationship("RefreshToken", back_populates="user", lazy="select")
     
     def __repr__(self):
@@ -110,36 +109,12 @@ class UserSettings(Base):
     # ========== 안전 설정 ==========
     night_safety_mode = Column(Boolean, default=True, comment='야간 안전 모드')
     auto_night_mode = Column(Boolean, default=True, comment='자동 야간 모드')
-    share_location = Column(Boolean, default=False, comment='위치 공유')
-    sos_button = Column(Boolean, default=True, comment='SOS 버튼')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # 사용자와의 관계
     user = relationship("User", back_populates="settings")
-
-
-class EmergencyContact(Base):
-    """
-    긴급 연락처 테이블 (emergency_contacts)
-    
-    사용자의 비상 연락처를 저장합니다.
-    한 사용자당 최대 3개까지 저장 가능합니다.
-    """
-    __tablename__ = "emergency_contacts"
-    __table_args__ = {'comment': '사용자당 최대 3개까지'}
-    
-    id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='사용자 ID')
-    
-    name = Column(String(50), nullable=False, comment='연락처 이름')
-    phone = Column(String(20), nullable=False, comment='전화번호 (10-15자리)')
-    
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    
-    # 사용자와의 관계
-    user = relationship("User", back_populates="emergency_contacts")
 
 
 class RefreshToken(Base):

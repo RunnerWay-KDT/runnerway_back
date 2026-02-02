@@ -1,7 +1,7 @@
 # ============================================
 # app/api/v1/community.py - 커뮤니티 API 라우터
 # ============================================
-# 게시글, 댓글, 좋아요, 북마크, 팔로우 등
+# 게시글, 댓글, 좋아요, 북마크 등
 # 커뮤니티 관련 API를 제공합니다.
 # ============================================
 
@@ -45,7 +45,6 @@ router = APIRouter(prefix="/community", tags=["Community"])
     
     **필터:**
     - type: running/walking/all
-    - following: true면 팔로우한 사용자만
     """
 )
 def get_feed(
@@ -53,7 +52,6 @@ def get_feed(
     limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
     sort: str = Query("latest", description="정렬 방식 (latest/popular/trending)"),
     type: Optional[str] = Query(None, description="운동 타입 필터"),
-    following: bool = Query(False, description="팔로우한 사용자만"),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
