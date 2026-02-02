@@ -1,7 +1,7 @@
 # ============================================
 # app/services/community_service.py - 커뮤니티 서비스
 # ============================================
-# 게시글, 댓글, 좋아요, 팔로우 등 커뮤니티 관련 비즈니스 로직을 처리합니다.
+# 게시글, 댓글, 좋아요 등 커뮤니티 관련 비즈니스 로직을 처리합니다.
 # ============================================
 
 from typing import Optional, List, Dict, Any
@@ -23,7 +23,6 @@ class CommunityService:
     - 게시글 CRUD
     - 댓글 CRUD
     - 좋아요/북마크
-    - 팔로우/언팔로우
     - 피드 조회
     """
     
@@ -47,8 +46,7 @@ class CommunityService:
         page: int = 1,
         limit: int = 20,
         sort: str = "latest",
-        post_type: str = None,
-        following_only: bool = False
+        post_type: str = None
     ) -> tuple[List[Post], int]:
         """
         피드 조회
@@ -59,7 +57,6 @@ class CommunityService:
             limit: 페이지당 항목 수
             sort: 정렬 방식 (latest/popular/trending)
             post_type: 게시글 타입 필터
-            following_only: 팔로우한 사용자만
         
         Returns:
             tuple: (게시글 목록, 전체 개수)

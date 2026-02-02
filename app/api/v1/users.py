@@ -20,6 +20,10 @@ from app.schemas.user import (
     UserDeleteRequest, UserDeleteResponse,
     UserStatsDetailSchema, UserPreferencesSchema
 )
+from app.schemas.settings import (
+    UserSettingsSchema, UpdateUserSettingsRequest,
+    UserSettingsResponseWrapper, UserSettingsUpdateResponseWrapper
+)
 from app.schemas.workout import (
     WorkoutSummarySchema, WorkoutListResponse, WorkoutListResponseWrapper
 )
@@ -353,3 +357,126 @@ def get_my_saved_routes(
         },
         "message": "저장한 경로 조회 성공"
     }
+
+
+# ============================================
+# 사용자 설정 조회
+# ============================================
+@router.get(
+    "/me/settings",
+    response_model=UserSettingsResponseWrapper,
+    summary="사용자 설정 조회",
+    description="""
+    현재 사용자의 앱 설정을 조회합니다.
+    
+    **포함 정보:**
+    - 앱 설정 (다크모드, 언어)
+    - 알림 설정 (푸시, 운동 알림, 목표 달성, 커뮤니티 활동)
+    - 운동 설정 (자동 랩, 야간 안전 모드, 자동 야간 모드)
+    """
+)
+def get_my_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """사용자 설정 조회 엔드포인트"""
+    from app.models.user import UserSettings
+    from app.core.exceptions import NotFoundException
+    
+    # 설정이 없으면 생성
+    if not current_user.settings:
+        settings = UserSettings(user_id=current_user.id)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    else:
+        settings = current_user.settings
+    
+    # 응답 데이터
+    settings_data = UserSettingsSchema(
+        dark_mode=settings.dark_mode,
+        language=settings.language,
+        push_enabled=settings.push_enabled,
+        workout_reminder=settings.workout_reminder,
+        goal_achievement=settings.goal_achievement,
+        community_activity=settings.community_activity,
+        auto_lap=settings.auto_lap,
+        night_safety_mode=settings.night_safety_mode,
+        auto_night_mode=settings.auto_night_mode
+    )
+    
+    return UserSettingsResponseWrapper(
+        success=True,
+        data=settings_data,
+        message="설정 조회 성공"
+    )
+
+
+# ============================================
+# 사용자 설정 업데이트
+# ============================================
+@router.patch(
+    "/me/settings",
+    response_model=UserSettingsUpdateResponseWrapper,
+    summary="사용자 설정 업데이트",
+    description="""
+    사용자의 앱 설정을 업데이트합니다.
+    
+    **수정 가능 항목:**
+    - dark_mode: 다크 모드 활성화 (boolean)
+    - language: 언어 설정 (ko/en)
+    - push_enabled: 푸시 알림 활성화 (boolean)
+    - workout_reminder: 운동 리마인더 (boolean)
+    - goal_achievement: 목표 달성 알림 (boolean)
+    - community_activity: 커뮤니티 활동 알림 (boolean)
+    - auto_lap: 자동 랩 (boolean)
+    - night_safety_mode: 야간 안전 모드 (boolean)
+    - auto_night_mode: 자동 야간 모드 (boolean)
+    
+    **부분 업데이트:** 변경할 필드만 전송
+    """
+)
+def update_my_settings(
+    request: UpdateUserSettingsRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """사용자 설정 업데이트 엔드포인트"""
+    from app.models.user import UserSettings
+    
+    # 설정이 없으면 생성
+    if not current_user.settings:
+        settings = UserSettings(user_id=current_user.id)
+        db.add(settings)
+        db.flush()
+    else:
+        settings = current_user.settings
+    
+    # 업데이트할 필드만 변경
+    update_data = request.model_dump(exclude_unset=True)
+    
+    for field, value in update_data.items():
+        if hasattr(settings, field):
+            setattr(settings, field, value)
+    
+    db.commit()
+    db.refresh(settings)
+    
+    # 응답 데이터
+    settings_data = UserSettingsSchema(
+        dark_mode=settings.dark_mode,
+        language=settings.language,
+        push_enabled=settings.push_enabled,
+        workout_reminder=settings.workout_reminder,
+        goal_achievement=settings.goal_achievement,
+        community_activity=settings.community_activity,
+        auto_lap=settings.auto_lap,
+        night_safety_mode=settings.night_safety_mode,
+        auto_night_mode=settings.auto_night_mode
+    )
+    
+    return UserSettingsUpdateResponseWrapper(
+        success=True,
+        data=settings_data,
+        message="설정이 업데이트되었습니다"
+    )

@@ -25,7 +25,6 @@ from app.models.user import (
     User,
     UserStats,
     UserSettings,
-    EmergencyContact,
     RefreshToken
 )
 from app.models.route import (
@@ -55,7 +54,6 @@ __all__ = [
     "User",
     "UserStats",
     "UserSettings",
-    "EmergencyContact",
     "RefreshToken",
     # Route 관련
     "RouteShape",
