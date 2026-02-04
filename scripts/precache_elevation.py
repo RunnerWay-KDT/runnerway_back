@@ -15,13 +15,7 @@ import osmnx as ox
 async def precache_area(lat: float, lon: float, radius: float):
     """특정 지역의 도로 노드 고도를 사전 수집하여 캐시함"""
     db = SessionLocal()
-    api_key = settings.VWORLD_API_KEY
-    
-    if not api_key:
-        print("❌ VWORLD_API_KEY가 설정되지 않았습니다.")
-        return
-
-    service = ElevationService(db, api_key)
+    service = ElevationService(db)
     fetcher = RoadNetworkFetcher()
 
     print(f"📍 지역 수집 시작: ({lat}, {lon}), 반경 {radius}m")
@@ -44,7 +38,7 @@ async def precache_area(lat: float, lon: float, radius: float):
             coordinates.append((data['y'], data['x']))
             
         # 3. 배치 조회 및 저장 (ElevationService가 자동으로 DB 저장함)
-        print(f"🚀 고도 데이터 수집 및 DB 저장 시작 (VWorld API 호출)...")
+        print(f"🚀 고도 데이터 수집 및 DB 저장 시작 (Open-Meteo API 호출)...")
         results = await service.get_elevations_batch(coordinates)
         
         print(f"\n✨ 수집 완료!")

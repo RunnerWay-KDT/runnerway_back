@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Boolean, Integer, Text, DateTime,
-    ForeignKey, DECIMAL, JSON, Date, UniqueConstraint
+    ForeignKey, DECIMAL, JSON, Date, UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
 
@@ -108,6 +108,12 @@ class RouteOption(Base):
     
     option_number = Column(Integer, nullable=False, comment='옵션 번호 (1, 2, 3)')
     name = Column(String(100), nullable=False, comment='옵션 이름 (하트 경로 A 등)')
+
+    # 유니크 제약 추가
+    __table_args__ = (
+        UniqueConstraint('route_id', 'option_number', 
+                        name='unique_route_option'),
+    )
     
     distance = Column(DECIMAL(5, 2), nullable=False, comment='거리 (km)')
     estimated_time = Column(Integer, nullable=False, comment='예상 소요 시간 (분)')
@@ -143,9 +149,10 @@ class SavedRoute(Base):
     
     saved_at = Column(DateTime, nullable=False, default=datetime.utcnow, comment='저장 일시')
     
-    # 복합 유니크 제약조건 (같은 경로 중복 저장 불가)
+    # 복합 유니크 제약조건 및 인덱스
     __table_args__ = (
         UniqueConstraint('user_id', 'route_id', name='unique_saved_route'),
+        Index('idx_saved_routes_user_created', 'user_id', 'saved_at'),
     )
     
     # 관계 정의
@@ -160,6 +167,10 @@ class RouteGenerationTask(Base):
     이 테이블은 생성 작업의 상태와 진행률을 추적합니다.
     """
     __tablename__ = "route_generation_tasks"
+    
+    __table_args__ = (
+        Index('idx_route_tasks_user_status', 'user_id', 'status'),
+    )
     
     id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID, task_id로 사용')
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='요청한 사용자 ID')

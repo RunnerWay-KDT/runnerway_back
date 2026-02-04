@@ -83,3 +83,6 @@ pytest-asyncio==0.23.3
 # --------------------------------------------
 osmnx>=1.9.0
 networkx>=3.1
+
+# tenacity - 외부 API 재시도 로직
+tenacity>=8.0.0

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # API 버전 프리픽스
     API_V1_PREFIX: str = "/api/v1"
     
+    # OSMnx 캐시 디렉토리
+    OSMNX_CACHE_DIR: str = "cache/osmnx"
+    
     # --------------------------------------------
     # 데이터베이스 설정
     # --------------------------------------------
@@ -89,9 +92,6 @@ class Settings(BaseSettings):
     # 로그 레벨
     LOG_LEVEL: str = "DEBUG"
 
-    
-    # VWorld API Key
-    VWORLD_API_KEY: str = ""
     
     @property
     def DATABASE_URL(self) -> str:

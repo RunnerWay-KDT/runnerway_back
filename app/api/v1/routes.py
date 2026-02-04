@@ -7,14 +7,14 @@
 
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 import uuid
 
 from app.db.database import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape
+from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid
 from app.schemas.route import (
     RouteGenerateRequest, RouteGenerateResponse, RouteGenerateResponseWrapper,
     RouteOptionsResponse, RouteOptionsResponseWrapper,
@@ -26,7 +26,7 @@ from app.schemas.route import (
     ElevationPrefetchRequest
 )
 from app.schemas.common import CommonResponse
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.exceptions import NotFoundException, ValidationException, ExternalAPIException
 import osmnx as ox
 import networkx as nx
 import logging
@@ -90,7 +90,7 @@ def request_route_generation(
         )
     
     # Task ID 생성
-    task_id = str(uuid.uuid4())
+    task_id = generate_uuid()
     
     # 경로 생성 Task 저장
     route_task = RouteGenerationTask(
@@ -277,8 +277,8 @@ def get_route_options(
 ):
     """경로 옵션 조회 엔드포인트"""
     
-    # 경로 조회
-    route = db.query(Route).filter(
+    # 경로 조회 (옵션과 함께 로드 -> N+1 문제 해결)
+    route = db.query(Route).options(joinedload(Route.options)).filter(
         Route.id == route_id,
         Route.user_id == current_user.id
     ).first()
@@ -289,10 +289,8 @@ def get_route_options(
             resource_id=route_id
         )
     
-    # 옵션 목록 조회
-    options = db.query(RouteOption).filter(
-        RouteOption.route_id == route_id
-    ).all()
+    # 옵션 목록 (이미 로드됨)
+    options = route.options
     
     option_list = []
     for opt in options:
@@ -657,11 +655,10 @@ async def recommend_route(
         )
         
         # ----------------------------
-        # 경사도 로직 추가 (VWorld API 비동기 연동)
+        # 경사도 로직 추가 (비동기 연동)
         # ----------------------------
-        from app.config import settings
         # 1. 고도 추가 (비동기 병렬 호출)
-        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY, db=db)
+        await fetcher.add_elevation_to_nodes_async(G, db=db)
         # 2. 경사도 및 가중치 계산
         fetcher.calculate_edge_grades_and_weights(G)
         
@@ -705,8 +702,9 @@ async def recommend_route(
             candidate_nodes = []
              
             for node, data in G.nodes(data=True):
-                node_lat = data['lat']
-                node_lng = data['lon']
+                # Decimal 타입을 float로 변환 (numpy 호환성)
+                node_lat = float(data['lat'])
+                node_lng = float(data['lon'])
                 
                 # 거리 계산
                 dist = ox.distance.great_circle(user_location[0], user_location[1], node_lat, node_lng)
@@ -819,31 +817,15 @@ async def recommend_route(
                 continue
 
     except Exception as e:
-        logger.error(f"Error generation route: {str(e)}", exc_info=True)
-        # Main logic failed, but we continue to fallback below
+        logger.error(f"Error generating route: {str(e)}", exc_info=True)
+        raise ExternalAPIException(f"경로 생성에 실패했습니다: {str(e)}")
     
-    # 4. Fallback checking (Always runs, even if exception occurred above)
+    # 4. 후보 경로가 없으면 에러 반환
     if not candidates:
-        logger.warning("No candidates generated via graph (or error occurred). Using fallback geometric generation via RoadNetworkFetcher.")
-        
-        # 3가지 옵션 생성
-        fallback_multipliers = [0.85, 1.0, 1.15]
-        route_names = ["Route A", "Route B", "Route C"]
-        
-        for i, mult in enumerate(fallback_multipliers):
-            dist_km = target_dist_km * mult
-            
-            # Use RoadNetworkFetcher for random loop calculation
-            # seed=i ensures differentiation between Route A, B, C
-            fallback_path = fetcher.generate_random_loop_route(user_location, dist_km, seed=i)
-            
-            candidates.append({
-                "id": i + 1,
-                "name": route_names[i],
-                "distance": f"{dist_km:.2f}km",
-                "time": int(dist_km * 6),
-                "path": fallback_path
-            })
+        logger.error("No route candidates generated. Check OSMnx network or path finding logic.")
+        raise ExternalAPIException(
+            "경로를 생성할 수 없습니다. 해당 위치에서 적절한 도로 네트워크를 찾을 수 없습니다."
+        )
         
     return {"candidates": candidates}
 
@@ -885,7 +867,6 @@ async def prefetch_elevation(
 async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Session = None):
     """백그라운드에서 실행되는 실제 수집 로직"""
     from app.services.road_network import RoadNetworkFetcher
-    from app.config import settings
     from app.db.database import SessionLocal  # 새로운 세션 생성용
     import asyncio
     
@@ -904,7 +885,7 @@ async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Sess
         
         # 2. 고도 수집 및 DB 저장 호출
         # 독립 세션(local_db) 전달
-        await fetcher.add_elevation_to_nodes_async(G, api_key=settings.VWORLD_API_KEY, db=local_db)
+        await fetcher.add_elevation_to_nodes_async(G, db=local_db)
         
         logger.info(f"Background prefetch completed for ({lat}, {lng})")
         

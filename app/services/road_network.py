@@ -4,6 +4,9 @@ from typing import Tuple, List, Optional, Dict
 from sqlalchemy.orm import Session
 import logging
 from math import radians, cos, sin, asin, sqrt
+from app.core.exceptions import ExternalAPIException
+import os
+import hashlib
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -27,7 +30,7 @@ class RoadNetworkFetcher:
     ) -> nx.Graph:
         """
         Args:
-            center_point: (위도, 경도) 튜풀
+            center_point: (위도, 경도) 튜플
             distance: 중심점으로부터의 거리 (미터)
             network_type: 'walk', 'bike', 'drive', 'all'
             simplify: True면 불필요한 중간 노드 제거, False면 모든 노드 유지
@@ -41,10 +44,37 @@ class RoadNetworkFetcher:
         if not (-180 <= lon <= 180):
             raise ValueError(f"Invalid longitude: {lon}. Must be between -180 and 180")
 
+        # 좌표를 100m 단위로 반올림 (캐시 히트율 향상)
+        lat_rounded = round(lat, 3)  # 약 111m 단위
+        lon_rounded = round(lon, 3)
+        
+        # 캐시 키 생성
+        cache_key = f"{lat_rounded}_{lon_rounded}_{int(distance)}_{network_type}"
+        cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()
+        
+        # 캐시 디렉토리 및 파일 경로
+        from app.config import settings
+        cache_dir = settings.OSMNX_CACHE_DIR
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, f"{cache_key_hash}.gpickle")
+        
+        # 캐시 확인
+        if os.path.exists(cache_file):
+            try:
+                logger.info(f"✅ Using cached network: {cache_key}")
+                G = ox.load_graphml(cache_file)
+                logger.info(f"Loaded cached graph with {G.number_of_nodes()} nodes")
+                return G
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}. Fetching from OSM...")
+                # 캐시 로드 실패 시 파일 삭제하고 새로 다운로드
+                os.remove(cache_file)
+
         try:
-            # OSMnx로 도로 네트워크 가져오기
+            # OSMnx로 도로 네트워크 가져오기 (반올림된 좌표 사용)
+            logger.info(f"Fetching network from OSM for ({lat_rounded}, {lon_rounded}) with distance {distance}m")
             G = ox.graph_from_point(
-                center_point=(lat, lon),
+                center_point=(lat_rounded, lon_rounded),  # 반올림된 좌표 사용
                 dist=distance,
                 network_type=network_type,
                 simplify=simplify,
@@ -58,11 +88,21 @@ class RoadNetworkFetcher:
             G = self._postprocess_graph(G)
 
             # logger.info(f"Built graph with {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+            
+            # 캐시 저장
+            try:
+                ox.save_graphml(G, cache_file)
+                logger.info(f"Saved network to cache: {cache_file}")
+            except Exception as e:
+                logger.warning(f"Failed to save cache: {e}")
 
             return G
+        except TimeoutError as e:
+            logger.error(f"OSMnx timeout: {e}")
+            raise ExternalAPIException("도로 정보를 가져오는데 시간이 초과되었습니다")
         except Exception as e:
-            logger.error(f"OSMnx API error: {e}")
-            raise
+            logger.error(f"OSMnx error: {e}")
+            raise ExternalAPIException("도로 정보를 가져오는데 실패했습니다")
 
     # 경계 박스 내 보행자 도로 네트워크를 추출
     def fetch_pedestrian_network_from_bbox(
@@ -147,126 +187,36 @@ class RoadNetworkFetcher:
     async def add_elevation_to_nodes_async(
         self, 
         G: nx.Graph, 
-        api_key: Optional[str] = None,
         db: Optional[Session] = None
     ) -> nx.Graph:
         """
         노드에 고도(elevation) 데이터를 비동기로 추가합니다 (캐시 우선).
         """
-        if api_key and db:
+        if db:
             logger.info("Using ElevationService with DB Cache...")
             from app.services.elevation_service import ElevationService
-            elevation_service = ElevationService(db, api_key)
             
-            # 모든 노드 좌표 추출
-            all_nodes = list(G.nodes())
-            coordinates = [(G.nodes[node]['y'], G.nodes[node]['x']) for node in all_nodes]
-            
-            # 배치 조회 (캐시 활용)
-            elevations = await elevation_service.get_elevations_batch(coordinates)
-            
-            # 노드에 반영
-            for node in all_nodes:
-                lat, lon = G.nodes[node]['y'], G.nodes[node]['x']
-                G.nodes[node]['elevation'] = elevations.get((lat, lon), 20.0)
+            # Context Manager 패턴으로 리소스 자동 관리
+            async with ElevationService(db) as elevation_service:
+                # 모든 노드 좌표 추출
+                all_nodes = list(G.nodes())
+                coordinates = [(G.nodes[node]['y'], G.nodes[node]['x']) for node in all_nodes]
                 
+                # 배치 조회 (캐시 활용)
+                elevations = await elevation_service.get_elevations_batch(coordinates)
+                
+                # 노드에 반영
+                for node in all_nodes:
+                    lat, lon = G.nodes[node]['y'], G.nodes[node]['x']
+                    G.nodes[node]['elevation'] = elevations.get((lat, lon), 20.0)
+                    
             logger.info(f"Elevation update completed using cache/API.")
-        elif api_key:
-            logger.info("Using VWorld API for elevation (No DB Cache)...")
-            await self._add_vworld_elevation_async(G, api_key)
         else:
-            logger.info("No API key provided. Using simulated elevation data.")
+            logger.info("No DB session provided. Using simulated elevation data.")
             self._add_simulated_elevation(G)
         return G
 
-    async def _add_vworld_elevation_async(self, G: nx.Graph, api_key: str):
-        """브이월드 API를 비동기 병렬로 호출하되, 샘플링을 통해 속도를 최적화합니다."""
-        import httpx
-        import asyncio
-        import random
 
-        # 1. 샘플링 대상 노드 선정 (모든 노드가 아닌 일부만 요청)
-        # 노드 수가 너무 많으면 성능 저하의 주범이 되므로, 최대 200개 정도로 제한하거나 5개 중 1개 선택
-        all_nodes = list(G.nodes())
-        if len(all_nodes) > 200:
-            sample_size = 200
-            request_nodes = random.sample(all_nodes, sample_size)
-            logger.info(f"Sampling {sample_size} nodes out of {len(all_nodes)} for elevation.")
-        else:
-            request_nodes = all_nodes
-            logger.info(f"Requesting elevation for all {len(all_nodes)} nodes.")
-
-        unique_coords = {}
-        for node in request_nodes:
-            data = G.nodes[node]
-            lat, lon = data['y'], data['x']
-            unique_coords[node] = (lat, lon)
-
-        coord_cache = {}
-        semaphore = asyncio.Semaphore(15) # 동시 요청 수 약간 상향
-
-        async def fetch_node_elevation(client, node, lat, lon):
-            cache_key = (round(lat, 5), round(lon, 5))
-            if cache_key in coord_cache:
-                return node, coord_cache[cache_key]
-
-            url = "https://api.vworld.kr/req/data"
-            params = {
-                "service": "data",
-                "request": "GetFeature",
-                "data": "LT_CH_DEM_10M",
-                "key": api_key,
-                "domain": "localhost",
-                "geomFilter": f"POINT({lon} {lat})"
-            }
-
-            async with semaphore:
-                for attempt in range(2):
-                    try:
-                        response = await client.get(url, params=params, timeout=5.0)
-                        if response.status_code == 200:
-                            res_json = response.json()
-                            if res_json.get("response", {}).get("status") == "OK":
-                                features = res_json.get("response", {}).get("result", {}).get("featureCollection", {}).get("features", [])
-                                if features:
-                                    height = features[0].get("properties", {}).get("height")
-                                    if height is not None:
-                                        elev = float(height)
-                                        coord_cache[cache_key] = elev
-                                        return node, elev
-                        
-                        await asyncio.sleep(0.1) # 짧은 대기
-                    except Exception:
-                        await asyncio.sleep(0.1)
-            
-            return node, 20.0 # 기본값
-
-        # 전체 과정에 15초 타임아웃 적용 (무한 대기 방지)
-        try:
-            async with httpx.AsyncClient() as client:
-                tasks = [fetch_node_elevation(client, node, lat, lon) for node, (lat, lon) in unique_coords.items()]
-                results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=15.0)
-
-            # 결과 반영
-            fetched_elevs = {}
-            for node, elev in results:
-                G.nodes[node]['elevation'] = elev
-                fetched_elevs[node] = elev
-
-            # 2. 샘플링되지 않은 노드들에 고도 채우기 (가장 가까운 샘플 노드 기반 또는 전체 평균)
-            avg_elev = sum(fetched_elevs.values()) / len(fetched_elevs) if fetched_elevs else 20.0
-            for node in all_nodes:
-                if 'elevation' not in G.nodes[node]:
-                    G.nodes[node]['elevation'] = avg_elev
-
-            logger.info(f"VWorld elevation update completed. Avg elevation: {avg_elev:.2f}m")
-            
-        except asyncio.TimeoutError:
-            logger.warning("VWorld elevation fetching timed out. Using default elevation for remaining nodes.")
-            # 타임아웃 시 기본값으로 모두 채움
-            for node in all_nodes:
-                if 'elevation' not in G.nodes[node]:
-                    G.nodes[node]['elevation'] = 20.0
 
     def _add_simulated_elevation(self, G: nx.Graph):
         """가상의 지형 굴곡을 노드에 부여합니다."""
@@ -373,10 +323,14 @@ class RoadNetworkFetcher:
                 
                 # 2. 'length'가 없거나 0이면 Haversine으로 계산 (Fallback)
                 if edge_len <= 0.001:
-                    pos1 = graph.nodes[node1].get('pos')
-                    pos2 = graph.nodes[node2].get('pos')
-                    if pos1 and pos2:
-                        edge_len = haversine_distance(pos1, pos2)
+                    # OSMnx 그래프는 'x'(경도), 'y'(위도) 속성 사용
+                    lon1 = graph.nodes[node1].get('x')
+                    lat1 = graph.nodes[node1].get('y')
+                    lon2 = graph.nodes[node2].get('x')
+                    lat2 = graph.nodes[node2].get('y')
+                    
+                    if lon1 and lat1 and lon2 and lat2:
+                        edge_len = haversine_distance((lon1, lat1), (lon2, lat2))
                         
                 total_distance += edge_len
 
@@ -401,15 +355,16 @@ class RoadNetworkFetcher:
         for node_id in path:
             node_data = graph.nodes[node_id]
 
-            # _postprocess_graph에서 이미 pos 속성을 추가했으므로 pos만 체크
-            if 'pos' in node_data:
-                lon, lat = node_data['pos']
+            # OSMnx 그래프는 'x'(경도), 'y'(위도) 속성 사용
+            if 'x' in node_data and 'y' in node_data:
+                lon = node_data['x']
+                lat = node_data['y']
                 coordinates.append({
-                    'lat': lat,
-                    "lng": lon
+                    'lat': float(lat),
+                    "lng": float(lon)
                 })
             else:
-                logger.warning(f"Node {node_id} missing pos coordinate data")
+                logger.warning(f"Node {node_id} missing x/y coordinate data")
 
         return coordinates
 
