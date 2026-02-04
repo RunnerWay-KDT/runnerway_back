@@ -25,8 +25,8 @@ class UserStatsDetailSchema(BaseModel):
 
 class UserPreferencesSchema(BaseModel):
     """사용자 선호 설정 스키마"""
-    dark_mode: bool = True
-    auto_lap: bool = False
+    night_safety_mode: bool = True
+    auto_night_mode: bool = True
 
 
 # ============================================
@@ -51,8 +51,8 @@ class UserProfileUpdateRequest(BaseModel):
                 "name": "새로운이름",
                 "avatar_url": "https://example.com/avatar.jpg",
                 "preferences": {
-                    "dark_mode": True,
-                    "auto_lap": False
+                    "night_safety_mode": True,
+                    "auto_night_mode": True
                 }
             }
         }
@@ -97,10 +97,17 @@ class UserProfileResponseWrapper(BaseModel):
 class UserUpdateResponse(BaseModel):
     """프로필 수정 응답 스키마"""
     id: str
+    email: str
     name: str
     avatar_url: Optional[str] = None
+    provider: Optional[str] = None
+    is_active: bool = True
+    stats: UserStatsDetailSchema
     preferences: Optional[UserPreferencesSchema] = None
     updated_at: datetime
+    
+    class Config:
+        from_attributes = True
 
 
 class UserUpdateResponseWrapper(BaseModel):
@@ -125,26 +132,11 @@ class UserSettingsSchema(BaseModel):
     """
     사용자 설정 스키마
     
-    앱 설정, 알림 설정, 안전 설정을 포함합니다.
+    안전 설정을 포함합니다.
     """
-    # 앱 설정
-    dark_mode: bool = True
-    language: str = "ko"
-    
-    # 알림 설정
-    push_enabled: bool = True
-    workout_reminder: bool = True
-    goal_achievement: bool = True
-    community_activity: bool = False
-    
-    # 운동 설정
-    auto_lap: bool = False
-    
     # 안전 설정
     night_safety_mode: bool = True
     auto_night_mode: bool = True
-    share_location: bool = False
-    sos_button: bool = True
     
     class Config:
         from_attributes = True

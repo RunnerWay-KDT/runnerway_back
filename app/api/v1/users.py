@@ -67,8 +67,8 @@ def get_my_profile(
     preferences = None
     if current_user.settings:
         preferences = UserPreferencesSchema(
-            dark_mode=current_user.settings.dark_mode,
-            auto_lap=current_user.settings.auto_lap
+            night_safety_mode=current_user.settings.night_safety_mode,
+            auto_night_mode=current_user.settings.auto_night_mode
         )
     
     # 응답 데이터 생성
@@ -124,29 +124,40 @@ def update_my_profile(
     
     # 설정 변경
     if request.preferences is not None and current_user.settings:
-        if request.preferences.dark_mode is not None:
-            current_user.settings.dark_mode = request.preferences.dark_mode
-        if request.preferences.auto_lap is not None:
-            current_user.settings.auto_lap = request.preferences.auto_lap
+        if request.preferences.night_safety_mode is not None:
+            current_user.settings.night_safety_mode = request.preferences.night_safety_mode
+        if request.preferences.auto_night_mode is not None:
+            current_user.settings.auto_night_mode = request.preferences.auto_night_mode
     
     current_user.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(current_user)
     
+    # 통계 정보
+    stats = UserStatsDetailSchema(
+        total_distance=float(current_user.stats.total_distance) if current_user.stats else 0,
+        total_workouts=current_user.stats.total_workouts if current_user.stats else 0,
+        completed_routes=current_user.stats.completed_routes if current_user.stats else 0
+    )
+    
     # 응답 데이터
     preferences = None
     if current_user.settings:
         preferences = UserPreferencesSchema(
-            dark_mode=current_user.settings.dark_mode,
-            auto_lap=current_user.settings.auto_lap
+            night_safety_mode=current_user.settings.night_safety_mode,
+            auto_night_mode=current_user.settings.auto_night_mode
         )
     
     return UserUpdateResponseWrapper(
         success=True,
         data=UserUpdateResponse(
             id=current_user.id,
+            email=current_user.email,
             name=current_user.name,
             avatar_url=current_user.avatar_url,
+            provider=None,
+            is_active=current_user.deleted_at is None,
+            stats=stats,
             preferences=preferences,
             updated_at=current_user.updated_at
         ),
@@ -394,13 +405,6 @@ def get_my_settings(
     
     # 응답 데이터
     settings_data = UserSettingsSchema(
-        dark_mode=settings.dark_mode,
-        language=settings.language,
-        push_enabled=settings.push_enabled,
-        workout_reminder=settings.workout_reminder,
-        goal_achievement=settings.goal_achievement,
-        community_activity=settings.community_activity,
-        auto_lap=settings.auto_lap,
         night_safety_mode=settings.night_safety_mode,
         auto_night_mode=settings.auto_night_mode
     )
@@ -424,12 +428,6 @@ def get_my_settings(
     
     **수정 가능 항목:**
     - dark_mode: 다크 모드 활성화 (boolean)
-    - language: 언어 설정 (ko/en)
-    - push_enabled: 푸시 알림 활성화 (boolean)
-    - workout_reminder: 운동 리마인더 (boolean)
-    - goal_achievement: 목표 달성 알림 (boolean)
-    - community_activity: 커뮤니티 활동 알림 (boolean)
-    - auto_lap: 자동 랩 (boolean)
     - night_safety_mode: 야간 안전 모드 (boolean)
     - auto_night_mode: 자동 야간 모드 (boolean)
     
@@ -464,13 +462,6 @@ def update_my_settings(
     
     # 응답 데이터
     settings_data = UserSettingsSchema(
-        dark_mode=settings.dark_mode,
-        language=settings.language,
-        push_enabled=settings.push_enabled,
-        workout_reminder=settings.workout_reminder,
-        goal_achievement=settings.goal_achievement,
-        community_activity=settings.community_activity,
-        auto_lap=settings.auto_lap,
         night_safety_mode=settings.night_safety_mode,
         auto_night_mode=settings.auto_night_mode
     )
