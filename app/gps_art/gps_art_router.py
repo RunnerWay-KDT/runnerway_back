@@ -1,6 +1,6 @@
 from queue import PriorityQueue
 from typing import List, Tuple, Dict, Optional
-from road_network import haversine_distance, RoadNetworkFetcher
+from .road_network import haversine_distance, RoadNetworkFetcher
 from collections import defaultdict
 import networkx as nx
 import numpy as np

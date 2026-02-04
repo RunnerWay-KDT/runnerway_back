@@ -1,8 +1,7 @@
 from typing import List, Dict, Tuple, Optional
 
-from fsspec.caching import P
-from road_network import RoadNetworkFetcher
-from gps_art_router import GPSArtRouter
+from .road_network import RoadNetworkFetcher
+from .gps_art_router import GPSArtRouter
 
 # 프론트에서 보내줄 그림 포인트 형식:
 # drawing_points = [{"lat": 37.5007, "lng": 127.0369}, ...]

@@ -721,12 +721,16 @@ def generate_gps_art(
                 message="존재하지 않는 도형입니다.",
                 field="shape_id",
             )
-        svg_path = shape.svg_url or ""
+        svg_path = (shape.svg_url or "").strip() or (body.get("svg_path") or "").strip()
         if not svg_path:
             raise ValidationException(
                 message="해당 도형에 SVG 경로가 없습니다.",
                 field="shape_id",
             )
+        # DB에 없었으면 body에서 받은 값으로 svg_url 저장 (다음부터 DB 사용)
+        if not (shape.svg_url or "").strip():
+            shape.svg_url = svg_path
+            db.commit()
         start = body.get("start", {})
         start_lat = float(start.get("lat", 37.5))
         start_lon = float(start.get("lng", 127.0))
