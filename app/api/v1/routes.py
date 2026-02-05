@@ -609,7 +609,7 @@ def save_custom_drawing(
             mode="none",    # 도형 그리기 (운동 모드 없음)
             start_latitude=request.location.latitude,
             start_longitude=request.location.longitude,
-            custom_svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
+            svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
             status="active"
         )
         
@@ -629,7 +629,7 @@ def save_custom_drawing(
             data=SaveCustomDrawingResponse(
                 route_id=route.id,
                 name=route.name,
-                svg_path=route.custom_svg_path,  # 컬럼명 수정
+                svg_path=route.svg_path,  # 컬럼명 수정
                 estimated_distance=request.estimated_distance,
                 created_at=route.created_at
             ),

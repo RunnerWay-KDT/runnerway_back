@@ -458,7 +458,7 @@ CREATE TABLE routes (
     start_longitude DECIMAL(10,7) NOT NULL,
     location_address VARCHAR(255),
     location_district VARCHAR(50),
-    custom_svg_path TEXT,               -- 사용자가 직접 그린 경로
+    svg_path TEXT,               -- 사용자가 직접 그린 경로
     custom_points LONGTEXT,             -- JSON 형식 좌표
     condition VARCHAR(20),              -- 'distance', 'duration'
     intensity VARCHAR(20),              -- 'easy', 'normal', 'hard'
@@ -1491,7 +1491,7 @@ CREATE TABLE workout_goals (
 
 실행:
 
-```bash
+```sh
 # MariaDB 접속 후
 mysql -h runnerway-back.xxx.rds.amazonaws.com -u member -p runnerway < scripts/migrations/add_workout_goals.sql
 ```
@@ -1511,7 +1511,7 @@ mysql -h runnerway-back.xxx.rds.amazonaws.com -u member -p runnerway < scripts/m
 
 #### 2. curl로 테스트
 
-```bash
+```sh
 # 1. 목표 생성
 curl -X POST "http://localhost:8000/api/v1/goals" \
   -H "Authorization: Bearer YOUR_TOKEN" \
@@ -1678,7 +1678,7 @@ def test_get_goal_progress():
 
 실행:
 
-```bash
+```sh
 pytest tests/test_goals.py -v
 ```
 
@@ -1690,7 +1690,7 @@ pytest tests/test_goals.py -v
 
 #### 1. 환경 변수 보안
 
-```bash
+```sh
 # .env 파일을 절대 Git에 올리지 말 것!
 # .gitignore에 추가
 echo ".env" >> .gitignore
@@ -1729,7 +1729,7 @@ engine = create_engine(
 
 #### 5. Gunicorn으로 실행
 
-```bash
+```sh
 # requirements.txt에 추가
 gunicorn==21.2.0
 

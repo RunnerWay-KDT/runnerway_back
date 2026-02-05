@@ -69,7 +69,7 @@ class Route(Base):
     start_longitude = Column(DECIMAL(10, 7), nullable=False, comment='시작점 경도')
     
     # ========== 커스텀 경로 데이터 ==========
-    custom_svg_path = Column(Text, nullable=True, comment='SVG Path 데이터 (커스텀인 경우)')
+    svg_path = Column(Text, nullable=True, comment='SVG Path 데이터 (커스텀인 경우)')
     
     # ========== 운동 설정 ==========
     # 러닝 설정
