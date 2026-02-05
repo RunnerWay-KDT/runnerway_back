@@ -339,6 +339,7 @@ class RouteRecommendRequest(BaseModel):
     lat: float = Field(..., description="시작 위도")
     lng: float = Field(..., description="시작 경도")
     target_distance_km: Optional[float] = Field(None, description="목표 거리 (km)")
+    target_time_min: Optional[float] = Field(None, description="목표 시간 (분)")  # 추가!
     prompt: Optional[str] = Field(None, description="추천 요청 프롬프트 (예: 회복 러닝용)")
 
 

@@ -19,7 +19,6 @@
 요청 → 라우터(API) → 서비스(비즈니스 로직) → 모델(DB) → 응답
 """
 
-from app.services.kakao_service import KakaoService
 from app.services.auth_service import AuthService
 from app.services.route_service import RouteService
 from app.services.workout_service import WorkoutService
@@ -27,7 +26,6 @@ from app.services.community_service import CommunityService
 
 
 __all__ = [
-    "KakaoService",
     "AuthService",
     "RouteService",
     "WorkoutService",

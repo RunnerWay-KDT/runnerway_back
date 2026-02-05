@@ -395,6 +395,33 @@ class RoadNetworkFetcher:
             "average_grade": round(avg_grade, 2)
         }
 
+    def calculate_total_elevation_change(self, G: nx.Graph, path: List[int]) -> float:
+        """경로의 총 고도 변화량 계산 (절대값 누적합)
+        
+        오르막과 내리막의 고도 차이를 모두 절대값으로 변환하여 누적합니다.
+        이를 통해 경로의 전체적인 고저 변화의 강도를 파악할 수 있습니다.
+        
+        Args:
+            G: NetworkX 그래프
+            path: 노드 ID 리스트
+        
+        Returns:
+            총 고도 변화량 (미터) - 오르막/내리막 절대값 누적
+        """
+        total_change = 0.0
+        
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i+1]
+            node_u = G.nodes[u]
+            node_v = G.nodes[v]
+            
+            if 'elevation' in node_u and 'elevation' in node_v:
+                # 절대값을 씌워서 누적
+                elev_diff = abs(node_v['elevation'] - node_u['elevation'])
+                total_change += elev_diff
+        
+        return round(total_change, 2)
+
     def _validate_bbox(self, bbox: List[float]) -> None:
         # BBox 형식 검증
         if len(bbox) != 4:

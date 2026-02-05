@@ -6,7 +6,7 @@
 # ============================================
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 import uuid
@@ -606,46 +606,56 @@ async def recommend_route(
     # 1. 목표 거리 설정 (컨디션 기반 또는 GPT)
     target_dist_km = request.target_distance_km
     
-    # 0. 프롬프트 기반 난이도/거리 설정 (GPT 제거 -> 키워드 매칭)
+    # 0. 프롬프트 기반 컨디션 설정 (거리는 설정하지 않음!)
     # Frontend sends constructed prompts like "목적: 회복 러닝..."
+    condition = "normal"  # 기본값
     if request.prompt:
         p = request.prompt.lower()
         if "recovery" in p or "회복" in p or "easy" in p:
-            if not target_dist_km: target_dist_km = random.uniform(2.0, 3.0) 
             condition = "recovery"
         elif "fat" in p or "지방" in p or "burn" in p:
-            # 지방 연소 난이도 하향 조정 (3.5 ~ 4.5km)
-            if not target_dist_km: target_dist_km = random.uniform(3.5, 4.5)
             condition = "fat-burn"
         elif "challenge" in p or "기록" in p or "hard" in p:
-            if not target_dist_km: target_dist_km = random.uniform(7.0, 10.0) 
             condition = "challenge"
-        else:
-            condition = "normal"
 
-    # 거리가 여전히 없으면 기본값 (Fallback)
-    if not target_dist_km or target_dist_km == 0.0:
-        target_dist_km = 3.0
-
-    logger.info(f"Processing request: {user_location}, distance: {target_dist_km}km")
+    logger.info(f"Processing request: {user_location}, condition: {condition}")
     
     candidates = []
 
     try:
-        # 1. RoadNetworkFetcher 초기화 및 그래프 다운로드
+        # 1. RoadNetworkFetcher 초기화
         fetcher = RoadNetworkFetcher()
         
-        # radius_meter 계산 (여유있게 설정하되 너무 크면 타임아웃 발생)
-        # 10km 코스(반경 5km)의 경우 데이터가 매우 큼. 
-        # 안전 계수를 1.5 -> 1.1로 줄여서 데이터 양 최적화
+        # 2. 먼저 페이스 계산하여 target_dist_km 결정
+        # 컨디션별 페이스 설정 (분/km)
+        if condition == "recovery":
+            pace_min_per_km = 10.0
+        elif condition == "challenge":
+            pace_min_per_km = 7.0
+        else:  # normal (지방연소)
+            pace_min_per_km = 9.0
+        
+        # 목표 시간 vs 목표 거리 우선순위
+        if request.target_time_min and request.target_time_min > 0:
+            target_time_min = request.target_time_min
+            target_dist_km = target_time_min / pace_min_per_km
+            logger.info(f"[TIME-BASED] 목표 시간 {target_time_min}분 → 거리 {target_dist_km:.2f}km")
+        elif target_dist_km and target_dist_km > 0:
+            target_time_min = target_dist_km * pace_min_per_km
+            logger.info(f"[DISTANCE-BASED] 목표 거리 {target_dist_km}km → 시간 {target_time_min}분")
+        else:
+            target_time_min = 30.0
+            target_dist_km = target_time_min / pace_min_per_km
+            logger.info(f"[DEFAULT] 기본 시간 30분 → 거리 {target_dist_km:.2f}km")
+        
+        # 3. 이제 거리가 결정되었으므로 radius_meter 계산
         radius_meter = (target_dist_km / 2) * 1000 * 1.1
         if radius_meter < 1500: radius_meter = 1500
+        if radius_meter > 8000:
+            logger.warning(f"Capping radius at 8000m (target: {target_dist_km:.1f}km)")
+            radius_meter = 8000
         
-        # 5km 이상 반경(즉 10km 코스)일 경우 타임아웃 방지를 위해 약간 더 축소하거나 경고
-        if radius_meter > 5000:
-            radius_meter = 5000 # Max cap per request for performance safety
-        
-        logger.info(f"Fetching network with radius {radius_meter}m using RoadNetworkFetcher...")
+        logger.info(f"Fetching network with radius {radius_meter}m...")
         import asyncio
         # OSMnx 호출은 CPU 및 I/O 집약적인 동기 함수이므로 쓰레드 풀에서 실행
         G = await asyncio.to_thread(
@@ -671,25 +681,25 @@ async def recommend_route(
         else:
             weight_key = 'length'
         
-        logger.info(f"Using weight key: {weight_key} for condition: {condition}")
+        # (페이스 계산은 이미 윗부분에서 완료됨)
+        logger.info(f"Using weight key: {weight_key}, pace: {pace_min_per_km}분/km, target_time: {target_time_min}분, target_distance: {target_dist_km:.2f}km for condition: {condition}")
         # ----------------------------
         
         # 출발지 노드 찾기
         orig_node = ox.distance.nearest_nodes(G, user_location[1], user_location[0])
         
-        # 3. 3방향 (0도, 120도, 240도) 반환점 찾기
-        offset = random.uniform(0, 60)
-        bearings = [(0 + offset) % 360, (120 + offset) % 360, (240 + offset) % 360] 
-        route_names = ["Route A", "Route B", "Route C"]
+        # 3. 여러 후보 경로 생성 (고도차 기반 선택을 위해)
+        num_candidates = 6  # 6개 후보 생성
+        candidate_routes = []
         
-        # 난이도별 거리 계수 (쉬움: 0.85배, 보통: 1.0배, 도전: 1.15배) -> 차이 명확화
-        dist_multipliers = [0.85, 1.0, 1.15]
-        
-        for i, bearing in enumerate(bearings):
-            logger.info(f"Generating route {i+1} for bearing {bearing}...")
+        for i in range(num_candidates):
+            # 랜덤한 방향으로 반환점 찾기 (각도는 크게 중요하지 않음)
+            bearing = random.uniform(0, 360)
+            logger.info(f"Generating candidate route {i+1}/{num_candidates} for bearing {bearing:.1f}°...")
             
-            # 현재 순번의 목표 거리 및 반경 재계산
-            current_target_km = target_dist_km * dist_multipliers[i]
+            # 현재 순번의 목표 거리 (약간의 변화 추가)
+            distance_variation = random.uniform(0.9, 1.1)
+            current_target_km = target_dist_km * distance_variation
             
             # 도로 굴곡도 약 1.3 가정
             tortuosity_factor = 1.3
@@ -731,9 +741,16 @@ async def recommend_route(
                 actual_dist_straight = candidate_nodes[0][2]
             else:
                  # 실패 시 랜덤 선택 (거리 조건만 만족하는)
+                 # 타입 변환 보장하여 에러 방지
+                 user_lat_float = float(user_location[0])
+                 user_lng_float = float(user_location[1])
+                 
                  possible_nodes = [
                      n for n, d in G.nodes(data=True) 
-                     if min_dist <= ox.distance.great_circle(user_location[0], user_location[1], d['lat'], d['lon']) <= max_dist
+                     if min_dist <= ox.distance.great_circle(
+                         user_lat_float, user_lng_float,
+                         float(d['lat']), float(d['lon'])
+                     ) <= max_dist
                  ]
                  if possible_nodes:
                      dest_node = random.choice(possible_nodes)
@@ -793,28 +810,77 @@ async def recommend_route(
                     logger.warning(f"Calculated distance too small ({real_distance_km}km). Using target {current_target_km}km instead.")
                     real_distance_km = current_target_km
 
-                # 시간 계산 (평균 러닝 페이스 6분/km)
-                pace_min_per_km = 6.0 
+                # 시간 계산 (컨디션별 페이스 적용)
                 est_time_min = int(real_distance_km * pace_min_per_km)
-                if est_time_min == 0: est_time_min = int(current_target_km * 6)
+                if est_time_min == 0: est_time_min = int(current_target_km * pace_min_per_km)
                 
                 # 좌표 변환
                 path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
                 stats = fetcher.get_elevation_stats(G, full_route)
                 
-                candidates.append({
-                    "id": i + 1,
-                    "name": route_names[i],
-                    "distance": f"{real_distance_km:.2f}km",
-                    "time": est_time_min,
-                    "path": path_coords,
-                    "reason": f"획득고도: {stats['total_ascent']}m, 평균경사도: {stats['average_grade']}%",
-                    "elevation_stats": stats
+                # 절대값 고도차 누적합 계산 (핵심!)
+                total_elev_change = fetcher.calculate_total_elevation_change(G, full_route)
+                
+                # 후보 경로 리스트에 저장 (나중에 정렬)
+                candidate_routes.append({
+                    'id': i + 1,
+                    'route': full_route,
+                    'elevation_change': total_elev_change,  # 절대값 누적합
+                    'distance_km': real_distance_km,
+                    'time': est_time_min,
+                    'coords': path_coords,
+                    'stats': stats
                 })
+                
+                logger.info(f"Candidate {i+1}: {real_distance_km:.2f}km, 고도변화: {total_elev_change:.0f}m")
 
             except Exception as e:
-                logger.error(f"Route calc failed for route {i}: {str(e)}", exc_info=True)
+                logger.error(f"Route calc failed for candidate {i+1}: {str(e)}", exc_info=True)
                 continue
+        
+        # 4. 고도차 순위로 정렬 (낮음 → 높음)
+        if len(candidate_routes) < 1:
+            logger.error(f"No valid candidates generated. Target distance: {target_dist_km}km, Radius: {radius_meter}m")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "NO_ROUTES_FOUND",
+                    "message": f"해당 지역에서 {target_dist_km:.1f}km 경로를 생성할 수 없습니다. 목표 시간을 줄이거나 다른 위치를 선택해주세요.",
+                    "suggestions": [
+                        f"현재 목표: {target_time_min}분 → 추천: {target_time_min // 2}분 이하",
+                        "또는 다른 시작 위치를 선택해주세요"
+                    ]
+                }
+            )
+        
+        if len(candidate_routes) < 3:
+            logger.warning(f"Only {len(candidate_routes)} candidates generated. Proceeding anyway...")
+        
+        candidate_routes.sort(key=lambda x: x['elevation_change'])
+        
+        # 5. 가장 낮음/중간/가장 높음 선택 (차이 극대화)
+        selected_count = min(3, len(candidate_routes))
+        if selected_count == 3:
+            # 가장 낮음, 정중앙, 가장 높음
+            selected_indices = [0, len(candidate_routes) // 2, len(candidate_routes) - 1]
+        elif selected_count == 2:
+            selected_indices = [0, len(candidate_routes) - 1]  # 낮음, 높음
+        else:
+            selected_indices = [0]  # 하나만
+        
+        route_names = ["평지 경로", "균형 경로", "업다운 경로"]
+        
+        for idx_position, route_idx in enumerate(selected_indices):
+            route_data = candidate_routes[route_idx]
+            candidates.append({
+                "id": idx_position + 1,
+                "name": route_names[idx_position],
+                "distance": f"{route_data['distance_km']:.2f}km",
+                "time": route_data['time'],
+                "path": route_data['coords'],
+                "reason": f"총 고도변화: {route_data['elevation_change']:.0f}m, 획득고도: {route_data['stats']['total_ascent']:.0f}m",
+                "elevation_stats": route_data['stats']
+            })
 
     except Exception as e:
         logger.error(f"Error generating route: {str(e)}", exc_info=True)

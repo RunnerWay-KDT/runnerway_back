@@ -6,6 +6,7 @@ from app.core.exceptions import ExternalAPIException
 import httpx
 import logging
 import asyncio
+import os
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -33,6 +34,21 @@ class ElevationService:
     def __init__(self, db: Session):
         self.db = db
         self._client = None
+        self.dem_service = None
+        
+        # DEM 서비스 초기화 시도
+        try:
+            from app.config import settings
+            from app.services.dem_elevation_service import DEMElevationService
+            
+            dem_path = settings.DEM_FILE_PATH
+            if os.path.exists(dem_path):
+                self.dem_service = DEMElevationService(dem_path)
+                logger.info(f"✅ DEM service initialized: {dem_path}")
+            else:
+                logger.info(f"ℹ️ DEM file not found: {dem_path}. Using Open-Meteo only.")
+        except Exception as e:
+            logger.warning(f"⚠️ DEM initialization failed: {e}. Fallback to Open-Meteo.")
     
     async def __aenter__(self):
         """Context Manager 진입: AsyncClient 생성"""
@@ -65,24 +81,29 @@ class ElevationService:
         )
     
     async def get_elevation(self, lat: float, lon: float) -> float:
-        """단일 좌표 고도 조회"""
+        """단일 좌표 고도 조회 (DEM → 캐시 → API 순서)"""
         
-        # 서울시 범위 체크
+        # 1. DEM 우선 조회
+        if self.dem_service and self.dem_service.is_in_coverage(lat, lon):
+            dem_elev = self.dem_service.get_elevation(lat, lon)
+            if dem_elev is not None:
+                return dem_elev
+        
+        # 2. 서울시 범위 체크
         if not self.is_in_seoul(lat, lon):
             logger.warning(f"Coordinate out of Seoul bounds: ({lat}, {lon})")
             return await self._fetch_from_api(lat, lon)
         
-        # 1. 캐시 조회
+        # 3. 캐시 조회
         cached = self._get_from_cache(lat, lon)
         if cached:
-            # hit_count 증가 (커밋은 배치 작업 끝에만 수행)
             cached.hit_count += 1
             return float(cached.elevation)
         
-        # 2. API 호출
+        # 4. API 호출
         elevation = await self._fetch_from_api(lat, lon)
         
-        # 3. 캐시 저장
+        # 5. 캐시 저장
         self._save_to_cache(lat, lon, elevation)
         
         return elevation
@@ -99,7 +120,36 @@ class ElevationService:
             
         results = {}
         
-        # 1. 그리딩 (좌표 정규화 및 중복 제거) - 반올림 유지 (API 호출 시 활용)
+        # 1. DEM 우선 조회 (커버리지 내 좌표)
+        dem_results = {}
+        remaining_coords = []
+        
+        if self.dem_service:
+            for lat, lon in coordinates:
+                if self.dem_service.is_in_coverage(lat, lon):
+                    dem_elev = self.dem_service.get_elevation(lat, lon)
+                    if dem_elev is not None:
+                        dem_results[(lat, lon)] = dem_elev
+                    else:
+                        remaining_coords.append((lat, lon))
+                else:
+                    remaining_coords.append((lat, lon))
+            
+            if dem_results:
+                logger.info(f"📍 DEM hits: {len(dem_results)}/{len(coordinates)} coordinates")
+        else:
+            remaining_coords = coordinates
+        
+        # 결과에 DEM 데이터 추가
+        results.update(dem_results)
+        
+        # DEM에서 못 찾은 좌표만 계속 처리
+        if not remaining_coords:
+            return results
+        
+        coordinates = remaining_coords  # 이하 로직은 남은 좌표만 처리
+        
+        # 2. 그리딩 (좌표 정규화 및 중복 제거)
         grid_map = {} 
         for lat, lon in coordinates:
             # 11m 단위 정도는 같은 점으로 취급해도 무방하므로 4자리 반올림
@@ -215,12 +265,48 @@ class ElevationService:
             for orig in grid_map[gc]:
                 results[orig] = elev
                 
-        # 4. 캐시 미스 분량 API 호출 (Skip for now to avoid 429)
+        # 4. 캐시 미스 분량 API 호출 (재활성화)
         if cache_misses:
-            logger.info(f"Skipping Open-Meteo API for {len(cache_misses)} points due to rate limits. Using defaults.")
-            # API 호출 없이 단순히 넘어갑니다. 
-            # 호출자(RoadNetworkFetcher)에서 .get(coord, 20.0)으로 기본값을 처리합니다.
-
+            logger.info(f"📡 Fetching {len(cache_misses)} missing points from Open-Meteo API...")
+            
+            try:
+                # 배치 크기 제한 (100개씩)
+                batch_size = 100
+                api_results = []
+                
+                for i in range(0, len(cache_misses), batch_size):
+                    batch = cache_misses[i:i+batch_size]
+                    logger.info(f"  Batch {i//batch_size + 1}/{(len(cache_misses)-1)//batch_size + 1}: {len(batch)} points")
+                    
+                    try:
+                        elevations = await self._fetch_batch_from_api(batch)
+                        api_results.extend(zip(batch, elevations))
+                        
+                        # Rate limit 방지: 배치 간 대기 (200ms)
+                        if i + batch_size < len(cache_misses):
+                            await asyncio.sleep(0.2)
+                    except Exception as e:
+                        logger.warning(f"  Batch failed: {e}, skipping...")
+                        continue
+                
+                # 결과 매핑 및 저장
+                if api_results:
+                    # 결과에 추가
+                    for coord, elev in api_results:
+                        # 그리드 맵에서 원본 좌표들 찾기
+                        if coord in grid_map:
+                            for orig in grid_map[coord]:
+                                results[orig] = elev
+                    
+                    # DB에 저장
+                    cache_items = [(lat, lon, elev) for (lat, lon), elev in api_results]
+                    self._save_batch_to_cache(cache_items)
+                    
+                    logger.info(f"✅ Successfully fetched and cached {len(api_results)} new points")
+                
+            except Exception as e:
+                logger.error(f"❌ API batch fetch failed: {e}")
+        
         return results
     
     
