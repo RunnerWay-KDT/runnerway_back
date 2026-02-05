@@ -25,6 +25,13 @@ from app.schemas.route import (
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
+from app.services.safety_score import (
+    compute_safety_score,
+    load_cctv_points,
+    load_lamp_points,
+    DEFAULT_CCTV_CSV,
+    DEFAULT_LAMP_CSV,
+)
 
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -151,17 +158,24 @@ async def generate_route_background(task_id: str, db: Session):
         
         # RouteOption 3개 생성 (모의 데이터)
         for i, option_type in enumerate(["balanced", "safety", "scenic"]):
+            path_data = {
+                "coordinates": [],  # TODO: 실제 좌표 데이터
+                "waypoints": []
+            }
+            safety_score = 90 - (i * 5)
+            if path_data.get("coordinates"):
+                infra = load_cctv_points(DEFAULT_CCTV_CSV) + load_lamp_points(DEFAULT_LAMP_CSV)
+                result = compute_safety_score(path_data["coordinates"], infra)
+                safety_score = int(round(result["score"]))
+
             option = RouteOption(
                 route_id=route.id,
                 option_type=option_type,
                 distance=task.target_distance + (i * 0.1),  # 약간씩 다른 거리
                 estimated_time=int(task.target_distance * 10),  # 분 단위
-                safety_score=90 - (i * 5),  # 안전도 점수
+                safety_score=safety_score,  # 안전도 점수
                 elevation_gain=50 + (i * 10),  # 고도 상승
-                path_data={
-                    "coordinates": [],  # TODO: 실제 좌표 데이터
-                    "waypoints": []
-                }
+                path_data=path_data
             )
             db.add(option)
         
@@ -647,4 +661,3 @@ def save_custom_drawing(
             message=f"경로 저장 중 오류가 발생했습니다: {str(e)}",
             field="route"
         )
-

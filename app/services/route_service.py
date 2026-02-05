@@ -10,6 +10,13 @@ from sqlalchemy.orm import Session
 import uuid
 
 from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape
+from app.services.safety_score import (
+    compute_safety_score,
+    load_cctv_points,
+    load_lamp_points,
+    DEFAULT_CCTV_CSV,
+    DEFAULT_LAMP_CSV,
+)
 from app.core.exceptions import NotFoundException, ValidationException
 
 
@@ -391,14 +398,21 @@ class RouteService:
             
             # 3개 옵션 생성
             for i, opt_type in enumerate(["balanced", "safety", "scenic"]):
+                path_data = {"coordinates": []}
+                safety_score = 90 - (i * 5)
+                if path_data.get("coordinates"):
+                    infra = load_cctv_points(DEFAULT_CCTV_CSV) + load_lamp_points(DEFAULT_LAMP_CSV)
+                    result = compute_safety_score(path_data["coordinates"], infra)
+                    safety_score = int(round(result["score"]))
+
                 option = RouteOption(
                     route_id=route.id,
                     option_type=opt_type,
                     distance=task.target_distance + (i * 0.1),
                     estimated_time=int(task.target_distance * 10),
-                    safety_score=90 - (i * 5),
+                    safety_score=safety_score,
                     elevation_gain=50 + (i * 10),
-                    path_data={"coordinates": []}
+                    path_data=path_data
                 )
                 self.db.add(option)
             
