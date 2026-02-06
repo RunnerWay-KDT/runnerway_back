@@ -4,6 +4,7 @@
 # 경로 생성, 옵션 조회, 저장/삭제 등 경로 관련 API를 제공합니다.
 # AI 기반 경로 생성 및 안전도 평가 기능을 포함합니다.
 # ============================================
+from operator import ge
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, Body
 from sqlalchemy.orm import Session
@@ -11,7 +12,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
 
-from app.db.database import get_db
+from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape
@@ -20,13 +21,14 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema,
+    RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
     SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
+from app.services.gps_art_service import generate_gps_art_impl
 
 router = APIRouter(prefix="/routes", tags=["Routes"])
 
@@ -221,13 +223,18 @@ def get_route_generation_status(
     response_data = {
         "task_id": task.id,
         "status": task.status,
-        "route_id": task.route_id
+        "route_id": task.route_id,
+        "progress": getattr(task, "progress", 0) or 0,
+        "current_step": getattr(task, "current_step", None),
+        "estimated_remaining": getattr(task, "estimated_remaining", None), 
     }
-    
-    # 완료된 경우 경로 정보 포함
+
+     # 완료된 경우 경로 정보 포함
     if task.status == "completed" and task.route_id:
         response_data["route_id"] = task.route_id
-    
+        opts = db.query(RouteOption).filter(RouteOption.route_id == task.route_id).all()
+        response_data["option_ids"] = [str(o.id) for o in opts]
+
     # 실패한 경우 에러 메시지 포함
     if task.status == "failed":
         response_data["error"] = task.error_message
@@ -255,13 +262,13 @@ def get_route_generation_status(
     """
 )
 def get_route_options(
-    route_id: int = Path(..., description="경로 ID"),
+    route_id: str = Path(..., description="경로 ID (UUID)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """경로 옵션 조회 엔드포인트"""
     
-    # 경로 조회
+    # 경로 조회 (Route.id는 UUID 문자열)
     route = db.query(Route).filter(
         Route.id == route_id,
         Route.user_id == current_user.id
@@ -280,25 +287,40 @@ def get_route_options(
     
     option_list = []
     for opt in options:
+        coords = opt.coordinates if isinstance(opt.coordinates, list) else []
+        coord_schema = [{"lat": float(c.get("lat", 0)), "lng": float(c.get("lng", 0))} for c in coords]
         option_list.append(RouteOptionSchema(
-            id=opt.id,
-            type=opt.option_type,
+            id=str(opt.id),
+            option_number=opt.option_number,
+            name=opt.name,
             distance=float(opt.distance),
             estimated_time=opt.estimated_time,
-            safety_score=opt.safety_score,
-            elevation_gain=opt.elevation_gain,
-            path_preview=opt.path_data.get("coordinates", [])[:10] if opt.path_data else []
+            difficulty=opt.difficulty or "보통",
+            tag=opt.tag,
+            coordinates=coord_schema,
+            scores=RouteScoresSchema(
+                safety=getattr(opt, "safety_score", 0) or 0,
+                elevation=getattr(opt, "elevation", 0) or 0,
+                lighting=getattr(opt, "lighting_score", 0) or 0,
+                sidewalk=getattr(opt, "sidewalk_score", 0) or 0,
+            ),
         ))
+    
+    shape_info = None
+    if route.shape:
+        shape_info = ShapeInfoSchema(
+            id=route.shape.id,
+            name=route.shape.name,
+            icon_name=route.shape.icon_name or "",
+            category=getattr(route.shape, "category", "") or "",
+            is_custom=False,
+        )
     
     return RouteOptionsResponseWrapper(
         success=True,
         data=RouteOptionsResponse(
-            route_id=route.id,
-            shape={
-                "id": route.shape.id if route.shape else None,
-                "name": route.shape.name if route.shape else None,
-                "icon": route.shape.icon_name if route.shape else None
-            },
+            route_id=str(route.id),
+            shape_info=shape_info,
             options=option_list
         )
     )
@@ -610,7 +632,7 @@ def save_custom_drawing(
             mode="none",    # 도형 그리기 (운동 모드 없음)
             start_latitude=request.location.latitude,
             start_longitude=request.location.longitude,
-            custom_svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
+            svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
             status="active"
         )
         
@@ -630,7 +652,7 @@ def save_custom_drawing(
             data=SaveCustomDrawingResponse(
                 route_id=route.id,
                 name=route.name,
-                svg_path=route.custom_svg_path,  # 컬럼명 수정
+                svg_path=route.svg_path,  # 컬럼명 수정
                 estimated_distance=request.estimated_distance,
                 created_at=route.created_at
             ),
@@ -672,163 +694,67 @@ def generate_gps_art(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    route_id_from_body = body.get("route_id")
-    shape_id = body.get("shape_id")
-    target_km = float(body.get("target_distance_km", 5.0))
-    enable_rotation = body.get("enable_rotation", True)
-    rotation_angles = body.get("rotation_angles")
+    return generate_gps_art_impl(body=body, user_id=current_user.id, db=db)
 
-    # 커스텀: route_id 있음 -> save_custom_drawing으로 만든 Route 활용
-    if route_id_from_body:
-        route = db.query(Route).filter(
-            Route.id == route_id_from_body,
-            Route.user_id == current_user.id,
-        ).first()
-        if not route:
-            raise ValidationException(
-                message="해당 경로를 찾을 수 없습니다.",
-                field="route_id"
-            )
-        if not route.custom_svg_path:
-            raise ValidationException(
-                message="해당 경로에 SVG 데이터가 없습니다.",
-                field="route_id",
-            )
-        start_lat = float(route.start_latitude)
-        start_lon = float(route.start_longitude)
-        svg_path = route.custom_svg_path
-        mode = "custom"
-        result = generate_routes(
-            start_lat=start_lat,
-            start_lon=start_lon,
-            svg_path=svg_path,
-            target_distance_km=target_km,
-            mode=mode,
-            shape_id=None,
-            enable_rotation=enable_rotation,
-            rotation_angles=rotation_angles,
-        )
-        route_id = route.id
+# GPS 아트 경로 생성 (비동기)
+@router.post(
+    "/generate-gps-art-async",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="GPS 아트 경로 생성 (비동기)",
+)
+def generate_gps_art_async(
+    body: dict = Body(...),
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task_id = str(uuid.uuid4())
+    task = RouteGenerationTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="processing",
+        progress=0,
+        current_step="processing",
+        estimated_remaining=90,
+        request_data=body,
+    )
+    db.add(task)
+    db.commit()
 
-    # 프리셋: shape_id 있음 -> get_shape_templates의 shape_id로 도형 사용
-    elif shape_id:
-        shape = db.query(RouteShape).filter(
-            RouteShape.id == shape_id,
-            RouteShape.is_active == True,
-        ).first()
-        if not shape:
-            raise ValidationException(
-                message="존재하지 않는 도형입니다.",
-                field="shape_id",
-            )
-        svg_path = (shape.svg_url or "").strip() or (body.get("svg_path") or "").strip()
-        if not svg_path:
-            raise ValidationException(
-                message="해당 도형에 SVG 경로가 없습니다.",
-                field="shape_id",
-            )
-        # DB에 없었으면 body에서 받은 값으로 svg_url 저장 (다음부터 DB 사용)
-        if not (shape.svg_url or "").strip():
-            shape.svg_url = svg_path
+    background_tasks.add_task(_generate_gps_art_background, task_id)
+
+    return {"success": True, "data": {"task_id": task_id}}
+
+# 백그라운드 작업: GPS 아트 경로 생성
+def _generate_gps_art_background(task_id: str):
+    db = SessionLocal()
+    try:
+        task = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+        if not task:
+            return
+
+        # 중간중간 progress 업데이트 가능
+        task.progress = 10
+        task.current_step = "processing"
+        db.commit()
+
+        result = generate_gps_art_impl(body=task.request_data, user_id=task.user_id, db=db)
+
+        task.status = "completed"
+        task.progress = 100
+        task.current_step = "completed"
+        task.estimated_remaining = 0
+        task.route_id = result["route_id"]
+        task.completed_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:
+        task = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+        if task:
+            task.status = "failed"
+            task.error_message = str(e)[:500]
+            task.completed_at = datetime.utcnow()
             db.commit()
-        start = body.get("start", {})
-        start_lat = float(start.get("lat", 37.5))
-        start_lon = float(start.get("lng", 127.0))
-        result = generate_routes(
-            start_lat=start_lat,
-            start_lon=start_lon,
-            svg_path=svg_path,
-            target_distance_km=target_km,
-            mode="shape",
-            shape_id=shape_id,
-            enable_rotation=enable_rotation,
-            rotation_angles=rotation_angles,
-        )
-        route = Route(
-            user_id=current_user.id,
-            shape_id=shape_id,
-            name=f"{shape.name} 경로",
-            type="preset",
-            mode=body.get("mode") or "none",
-            start_latitude=start_lat,
-            start_longitude=start_lon,
-            custom_svg_path=None,
-            status="active",
-        )
-        db.add(route)
-        db.flush()
-        route_id = route.id
-
-    # 그 외: route_id 없이 커스텀(바로 생성) -> Route 새로 만들고 Option 3건 생성
-    else:
-        svg_path = body.get("svg_path") or ""
-        if not svg_path:
-            raise ValidationException(
-                message="커스텀 그리기 시 svg_path 또는 route_id가 필요합니다.",
-                field="svg_path",
-            )
-        start = body.get("start", {})
-        start_lat = float(start.get("lat", 37.5))
-        start_lon = float(start.get("lng", 127.0))
-        result = generate_routes(
-            start_lat=start_lat,
-            start_lon=start_lon,
-            svg_path=svg_path,
-            target_distance_km=target_km,
-            mode="custom",
-            shape_id=None,
-            enable_rotation=enable_rotation,
-            rotation_angles=rotation_angles,
-        )
-        route = Route(
-            user_id=current_user.id,
-            shape_id=None,
-            name=body.get("name") or "커스텀 경로",
-            type="custom",
-            mode=body.get("mode") or "none",
-            start_latitude=start_lat,
-            start_longitude=start_lon,
-            custom_svg_path=svg_path,
-            status="active",
-        )
-        db.add(route)
-        db.flush()
-        route_id = route.id
+    finally:
+        db.close()
     
-    # 공통: RouteOption 3건 생성
-    option_names = ["1순위 (가장 유사)", "2순위", "3순위"]
-    tags = [None, "추천", "BEST"]
-    option_ids = []
-
-    # 거리 순으로 difficulty 부여 (짧은→짧은 코스, 중간→보통, 긴→긴 코스)
-    routes_list = result["routes"]
-    distances_with_idx = [(i, float(r.get("distance_km", 0))) for i, r in enumerate(routes_list)]
-    distances_with_idx.sort(key=lambda x: x[1])
-    difficulty_by_idx = {
-        distances_with_idx[0][0]: "짧은 코스",
-        distances_with_idx[1][0]: "보통",
-        distances_with_idx[2][0]: "긴 코스",
-    }
-
-    for i, r in enumerate(result["routes"]):
-        coords = r.get("coordinates", [])
-        distance_km = float(r.get("distance_km", 0))
-        difficulty = difficulty_by_idx[i]
-        opt = RouteOption(
-            route_id=route_id,
-            option_number=i + 1,
-            name=option_names[i],
-            distance=distance_km,
-            estimated_time=max(1, int(round(distance_km * 7))),
-            difficulty=difficulty,
-            tag=tags[i], # 나중에 수정해야함
-            coordinates=coords,
-            safety_score=90 - i * 3,
-            elevation=0,
-            lighting_score=0,
-            sidewalk_score=0,
-        )
-        db.add(opt)
-        db.flush()
-        option_ids.append(opt.id)
-
+        
