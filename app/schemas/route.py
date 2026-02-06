@@ -195,7 +195,6 @@ class RouteScoresSchema(BaseModel):
     safety: int = Field(0, description="안전도 (0-100)")
     elevation: int = Field(0, description="고도차 (m)")
     lighting: int = Field(0, description="조명 점수 (0-100)")
-    sidewalk: int = Field(0, description="인도 비율 (0-100)")
 
 
 class RouteOptionSchema(BaseModel):
