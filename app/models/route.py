@@ -117,6 +117,11 @@ class RouteOption(Base):
     
     distance = Column(DECIMAL(5, 2), nullable=False, comment='거리 (km)')
     estimated_time = Column(Integer, nullable=False, comment='예상 소요 시간 (분)')
+    
+    # 페이스 정보
+    recommended_pace = Column(String(10), nullable=True, comment='추천 페이스 (분:초/km, 예: 7:00)')
+    condition_type = Column(String(20), nullable=True, comment='recovery/fat-burn/challenge/normal')
+    
     difficulty = Column(String(20), nullable=False, comment='쉬움/보통/도전')
     tag = Column(String(20), nullable=True, comment='추천/BEST/null')
     
@@ -125,9 +130,25 @@ class RouteOption(Base):
     
     # ========== 점수/특성 ==========
     safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
-    elevation = Column(Integer, default=0, comment='고도차 (m)')
+    
+    # 고도 통계
+    max_elevation_diff = Column(Integer, default=0, comment='최대 고도차 (최고점-최저점, m)')
+    total_ascent = Column(DECIMAL(6, 2), default=0, comment='총 상승 고도 (m)')
+    total_descent = Column(DECIMAL(6, 2), default=0, comment='총 하강 고도 (m)')
+    total_elevation_change = Column(DECIMAL(6, 2), default=0, comment='총 고도 변화량 (m)')
+    average_grade = Column(DECIMAL(4, 2), default=0, comment='평균 경사도 (%)')
+    max_grade = Column(DECIMAL(4, 2), default=0, comment='최대 경사도 (%)')
+    
     lighting_score = Column(Integer, default=0, comment='조명 점수 (0-100)')
     sidewalk_score = Column(Integer, default=0, comment='인도 비율 (0-100)')
+    
+    # 자기 교차 검증
+    has_self_intersection = Column(Boolean, default=False, comment='자기 교차 여부 (검증 완료)')
+    validation_version = Column(String(10), default='v1.0', comment='교차 검증 알고리즘 버전')
+    
+    # 경로 복잡도
+    segment_count = Column(Integer, default=0, comment='경로 세그먼트(선분) 수')
+    turn_count = Column(Integer, default=0, comment='방향 전환 횟수')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
@@ -187,6 +208,12 @@ class RouteGenerationTask(Base):
     # 결과 (완료 시)
     route_id = Column(String(36), ForeignKey("routes.id"), nullable=True, comment='생성된 경로 ID (완료 시)')
     error_message = Column(String(500), nullable=True, comment='에러 메시지 (실패 시)')
+    
+    # 경로 생성 통계
+    total_candidates = Column(Integer, default=6, comment='생성된 총 후보 경로 수')
+    filtered_by_intersection = Column(Integer, default=0, comment='자기 교차로 필터링된 수')
+    filtered_by_distance = Column(Integer, default=0, comment='거리 불일치로 필터링된 수')
+    generation_metadata = Column(JSON, nullable=True, comment='생성 과정 상세 정보')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True, comment='완료/실패 시간')

@@ -6,7 +6,7 @@
 # ============================================
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 
 
@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # --------------------------------------------
     # 로그 레벨
     LOG_LEVEL: str = "DEBUG"
+    
+    # DEM 파일 경로 (선택적)
+    DEM_FILE_PATH: Optional[str] = None
 
     
     @property

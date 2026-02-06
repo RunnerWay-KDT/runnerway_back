@@ -58,6 +58,16 @@ def get_current_user(
     
     token = credentials.credentials
     print(f"🔑 [인증] 토큰 수신: {token[:20]}...")
+
+    # 0. 개발 환경 테스트 토큰 처리
+    if token == "dummy_token_for_test":
+        from app.config import settings
+        if settings.ENVIRONMENT == "development":
+            print("⚠️ [인증] 테스트 토큰 감지. 개발 환경이므로 첫 번째 사용자로 로그인합니다.")
+            user = db.query(User).first()
+            if user:
+                return user
+            print("❌ [인증] 테스트 토큰 사용 불가: DB에 사용자가 없습니다.")
     
     # 2. 토큰 검증
     user_id = verify_access_token(token)

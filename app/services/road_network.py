@@ -357,11 +357,11 @@ class RoadNetworkFetcher:
 
             # OSMnx 그래프는 'x'(경도), 'y'(위도) 속성 사용
             if 'x' in node_data and 'y' in node_data:
-                lon = node_data['x']
+                lng = node_data['x']
                 lat = node_data['y']
                 coordinates.append({
                     'lat': float(lat),
-                    "lng": float(lon)
+                    'lng': float(lng)
                 })
             else:
                 logger.warning(f"Node {node_id} missing x/y coordinate data")
@@ -561,3 +561,135 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
 
     # 호의 길이
     return c * r
+    # 가장 가까운 노드 찾기
+    def get_nearest_node(self, G: nx.Graph, point: Tuple[float, float]) -> int:
+        """
+        Args:
+            G: NetworkX 그래프
+            point: (lat, lon)
+        Returns:
+            노드 ID
+        """
+        return ox.distance.nearest_nodes(G, point[1], point[0])
+
+    # 루프 경로 생성 (실제 도로 기반)
+    def generate_loop_route(
+        self,
+        G: nx.Graph,
+        start_node: int,
+        target_distance_km: float,
+        attempt_number: int = 0
+    ) -> List[int]:
+        """
+        출발지에서 목표 거리만큼의 루프 경로를 생성합니다.
+        
+        Args:
+            G: NetworkX 그래프
+            start_node: 출발 노드 ID
+            target_distance_km: 목표 거리 (km)
+            attempt_number: 시도 횟수 (다양한 방향 생성을 위해 사용)
+            
+        Returns:
+            노드 ID 리스트 (경로)
+        """
+        import random
+        import math
+        
+        # 1. 반환점(Destination) 찾기
+        # 시도 횟수에 따라 방향을 다르게 설정
+        # 0: 0도, 1: 60도, 2: 120도 ... (랜덤성 추가)
+        base_bearing = (attempt_number * 60) % 360
+        bearing = base_bearing + random.uniform(-20, 20)
+        
+        # 목표 반경 (왕복이므로 전체 거리의 절반)
+        # 도로 굴곡도(Tortuosity)를 고려하여 직선 거리는 더 짧게 설정
+        tortuosity_factor = 1.3
+        target_radius_km = (target_distance_km / 2) / tortuosity_factor
+        target_radius_m = target_radius_km * 1000
+        
+        # 해당 거리와 방향에 있는 노드 탐색
+        min_dist = target_radius_m * 0.8
+        max_dist = target_radius_m * 1.2
+        
+        candidate_nodes = []
+        
+        start_data = G.nodes[start_node]
+        start_lat = start_data['y']
+        start_lng = start_data['x']
+        
+        for node, data in G.nodes(data=True):
+            if 'y' not in data or 'x' not in data:
+                continue
+                
+            node_lat = data['y']
+            node_lng = data['x']
+            
+            # 거리 계산
+            dist = ox.distance.great_circle(start_lat, start_lng, node_lat, node_lng)
+            
+            if min_dist <= dist <= max_dist:
+                # 방위각 계산
+                y = math.sin(math.radians(node_lng - start_lng)) * math.cos(math.radians(node_lat))
+                x = math.cos(math.radians(start_lat)) * math.sin(math.radians(node_lat)) - \
+                    math.sin(math.radians(start_lat)) * math.cos(math.radians(node_lat)) * \
+                    math.cos(math.radians(node_lng - start_lng))
+                calc_bearing = math.degrees(math.atan2(y, x))
+                calc_bearing = (calc_bearing + 360) % 360
+                
+                angle_diff = abs(calc_bearing - bearing)
+                angle_diff = min(angle_diff, 360 - angle_diff)
+                
+                if angle_diff < 40:
+                    candidate_nodes.append((node, angle_diff))
+        
+        if not candidate_nodes:
+            # 방향 조건 완화하여 다시 검색
+            for node, data in G.nodes(data=True):
+                 if 'y' not in data or 'x' not in data: continue
+                 dist = ox.distance.great_circle(start_lat, start_lng, data['y'], data['x'])
+                 if min_dist * 0.7 <= dist <= max_dist * 1.3:
+                     candidate_nodes.append((node, random.uniform(0, 100)))
+        
+        if not candidate_nodes:
+            logger.warning("No destination validation candidates found.")
+            return []
+            
+        # 가장 조건에 맞는 노드 선택
+        candidate_nodes.sort(key=lambda x: x[1])
+        dest_node = candidate_nodes[0][0]
+        
+        # 2. 경로 탐색 (가는 길)
+        try:
+            route_to = nx.shortest_path(G, start_node, dest_node, weight='length')
+        except nx.NetworkXNoPath:
+            return []
+            
+        # 3. 오는 길 (가는 길과 겹치지 않게 페널티 부여)
+        # 엣지 가중치 임시 변경
+        original_weights = {}
+        for u, v in zip(route_to[:-1], route_to[1:]):
+            if G.has_edge(u, v):
+                edge_data = G.get_edge_data(u, v)
+                # MultiGraph 처리
+                if 0 in edge_data:
+                    edge_data = edge_data[0]
+                
+                if 'length' in edge_data:
+                    original_weights[(u, v)] = edge_data['length']
+                    edge_data['length'] *= 10 # 페널티
+        
+        try:
+            route_from = nx.shortest_path(G, dest_node, start_node, weight='length')
+        except nx.NetworkXNoPath:
+            route_from = route_to[::-1] # 되돌아오기
+        finally:
+            # 가중치 복구
+            for (u, v), w in original_weights.items():
+                if G.has_edge(u, v):
+                     edge_data = G.get_edge_data(u, v)
+                     if 0 in edge_data: edge_data = edge_data[0]
+                     edge_data['length'] = w
+                     
+        # 4. 경로 합치기
+        full_route = route_to + route_from[1:]
+        return full_route

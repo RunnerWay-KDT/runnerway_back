@@ -1,4 +1,4 @@
-# ============================================
+﻿# ============================================
 # app/api/v1/routes.py - 경로 API 라우터
 # ============================================
 # 경로 생성, 옵션 조회, 저장/삭제 등 경로 관련 API를 제공합니다.
@@ -960,3 +960,189 @@ async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Sess
     finally:
         # 사용 완료한 세션 닫기
         local_db.close()
+
+
+# ============================================
+# 비동기 경로 생성 (진행률 바)
+# ============================================
+@router.post(
+    "/recommend-async",
+    summary="AI 경로 추천 (비동기, 진행률 바)",
+    description="""
+    GPT와 OSMnx를 사용하여 사용자 맞춤형 경로를 추천합니다.
+    
+    **비동기 처리:**
+    1. Task를 생성하고 task_id를 즉시 반환
+    2. 백그라운드에서 경로 생성 실행
+    3. /routes/tasks/{task_id} API로 진행률 확인
+    4. 완료되면 /routes/tasks/{task_id}/result로 결과 조회
+    """
+)
+async def recommend_route_async(
+    request: RouteRecommendRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    비동기 경로 추천 엔드포인트 (진행률 바 지원)
+    
+    Returns:
+        {"task_id": str} - Task ID를 반환, 이후 진행률 확인 가능
+    """
+    from app.services.background_tasks import generate_route_background
+    
+    # Task 생성
+    task = RouteGenerationTask(
+        user_id=current_user.id,
+        status="processing",
+        progress=0,
+        current_step="대기 중...",
+        request_data={
+            "lat": request.lat,
+            "lng": request.lng,
+            "target_time_min": request.target_time_min,
+            "target_distance_km": request.target_distance_km,
+            "prompt": request.prompt
+        }
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    
+    logger.info(f"Created task {task.id} for user {current_user.id}")
+    
+    # 백그라운드에서 경로 생성 실행
+    background_tasks.add_task(
+        generate_route_background,
+        task.id,
+        current_user.id,
+        task.request_data,
+        db
+    )
+    
+    # task_id 즉시 반환
+    return {
+        "task_id": task.id,
+        "status": "processing",
+        "message": "경로 생성이 시작되었습니다. /routes/tasks/{task_id} API로 진행률을 확인하세요."
+    }
+
+
+@router.get(
+    "/tasks/{task_id}",
+    summary="경로 생성 Task 상태 조회",
+    description="진행률, 현재 단계, 예상 남은 시간 등을 확인합니다."
+)
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Task 상태 조회
+    
+    Returns:
+        {
+            "task_id": str,
+            "status": "processing" | "completed" | "failed",
+            "progress": int (0-100),
+            "current_step": str,
+            "estimated_remaining": int (초),
+            "error_message": str | null
+        }
+    """
+    task = db.query(RouteGenerationTask).filter(
+        RouteGenerationTask.id == task_id,
+        RouteGenerationTask.user_id == current_user.id
+    ).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task를 찾을 수 없습니다")
+    
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "progress": task.progress,
+        "current_step": task.current_step,
+        "estimated_remaining": task.estimated_remaining,
+        "error_message": task.error_message
+    }
+
+
+@router.get(
+    "/tasks/{task_id}/result",
+    summary="완료된 경로 생성 결과 조회",
+    description="Task가 완료된 후 생성된 경로 데이터를 조회합니다."
+)
+async def get_task_result(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    완료된 Task의 결과 조회
+    
+    Returns:
+        {
+            "task_id": str,
+            "status": "completed",
+            "route_id": str,
+            "candidates": [...]
+        }
+    """
+    task = db.query(RouteGenerationTask).filter(
+        RouteGenerationTask.id == task_id,
+        RouteGenerationTask.user_id == current_user.id
+    ).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task를 찾을 수 없습니다")
+    
+    if task.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task가 아직 완료되지 않았습니다. 현재 상태: {task.status}"
+        )
+    
+    # Route 및 RouteOption 조회
+    route = db.query(Route).filter(Route.id == task.route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="생성된 경로를 찾을 수 없습니다")
+    
+    options = db.query(RouteOption).filter(
+        RouteOption.route_id == route.id
+    ).order_by(RouteOption.option_number).all()
+    
+    # 응답 포맷 변환
+    candidates = []
+    for option in options:
+        candidates.append({
+            "id": option.option_number,
+            "name": option.name,
+            "distance": f"{option.distance:.2f}km",
+            "time": option.estimated_time,
+            "path": option.coordinates,
+            "reason": f"총 고도변화: {option.total_elevation_change:.0f}m, 획득고도: {option.total_ascent:.0f}m",
+            "elevation_stats": {
+                "total_ascent": option.total_ascent,
+                "total_descent": option.total_descent,
+                "average_grade": option.average_grade,
+                "max_grade": option.max_grade
+            },
+            "recommended_pace": option.recommended_pace,
+            "segment_count": option.segment_count,
+            "turn_count": option.turn_count
+        })
+    
+    return {
+        "task_id": task.id,
+        "status": "completed",
+        "route_id": route.id,
+        "candidates": candidates,
+        "stats": {
+            "total_candidates": task.total_candidates,
+            "filtered_by_intersection": task.filtered_by_intersection
+        }
+    }
+
