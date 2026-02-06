@@ -64,7 +64,6 @@ def _project_lonlat_list(
 ) -> List[Tuple[float, float]]:
     return [transformer.transform(lon, lat) for lon, lat in coords]
 
-
 def _sample_points_along_line(line_m: LineString, step_m: float) -> List[Point]:
     length = float(line_m.length)
     if length <= 0:
@@ -249,7 +248,7 @@ def load_lamp_points(csv_path: str) -> List[Dict]:
     with open(csv_path, "r", encoding="utf-8", errors="ignore", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # 서울특별시_가로등 위치 정보_20221108.csv 헤더: 관리번호,위도,경도
+            # 헤더: 관리번호,위도,경도
             lat = row.get("위도") or row.get("lat") or row.get("LAT")
             lon = row.get("경도") or row.get("lon") or row.get("lng") or row.get("LON")
             if lat is None or lon is None:
