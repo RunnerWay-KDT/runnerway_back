@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Callable
 
 from .road_network import RoadNetworkFetcher
 from .gps_art_router import GPSArtRouter
@@ -19,6 +19,7 @@ def generate_routes(
     rotation_angles: Optional[List[float]] = [i for i in range(-180, 180, 10)],
     length_feedback: bool = True, # True면 1회 실행 후 거리 보정해 최대 2회 실행
     return_node_paths: bool = True, # True면 각 route에 node_path(그래프 노드 ID 리스트) 포함
+    on_progress: Optional[Callable[[int, str], None]] = None, # 진행 상태 콜백 (퍼센트, 단계 텍스트)
 ) -> Dict:
     """
     Args:
@@ -95,6 +96,12 @@ def generate_routes(
 
         # (K 배치 전수 조사) → 각 배치마다 회전 → 스케일 → 유사도 평가
         for k in range(len(sampled)):
+            # 진행률 10~80%를 K 배치 개수 기준으로 할당
+            if on_progress:
+                frac = (k + 1)  / len(sampled)
+                percent = 10 + int(frac * 70)
+                on_progress(percent, "processing")
+
             # K 배치: k번째 점이 출발지에 오도록 평행이동만
             point_at_k = sampled[k]
             placed_k = router.translate_coordinates(

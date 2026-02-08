@@ -119,7 +119,7 @@ class RouteOption(Base):
     
     # ========== 점수/특성 ==========
     safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
-    elevation = Column(Integer, default=0, comment='고도차 (m)')
+    max_elevation_diff = Column(Integer, default=0, comment='고도차 (m)')
     lighting_score = Column(Integer, default=0, comment='조명 점수 (0-100)')
     sidewalk_score = Column(Integer, default=0, comment='인도 비율 (0-100)')
     

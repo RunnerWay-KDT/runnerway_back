@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
+import logging
 
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
@@ -30,6 +31,7 @@ from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 from app.services.gps_art_service import generate_gps_art_impl
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routes", tags=["Routes"])
 
 
@@ -300,7 +302,7 @@ def get_route_options(
             coordinates=coord_schema,
             scores=RouteScoresSchema(
                 safety=getattr(opt, "safety_score", 0) or 0,
-                elevation=getattr(opt, "elevation", 0) or 0,
+                elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
                 sidewalk=getattr(opt, "sidewalk_score", 0) or 0,
             ),
@@ -734,25 +736,50 @@ def _generate_gps_art_background(task_id: str):
             return
 
         # 중간중간 progress 업데이트 가능
-        task.progress = 10
-        task.current_step = "processing"
+        task.progress = 5
+        task.current_step = "pending"
+        task.estimated_remaining = 90
         db.commit()
 
-        result = generate_gps_art_impl(body=task.request_data, user_id=task.user_id, db=db)
+        def update_progress(percent: int, step: str):
+            # progress 업데이트 함수
+            t = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+            if not t:
+                logger.warning("[GPS 아트 경로 생성] 백그라운드 작업 중 태스크 조회 실패", task_id)
+                return
+            t.progress = max(t.progress or 0, min(percent, 99))
+            t.current_step = step
+            # 대충 남은 시간도 비례해서 줄여주는 예시 (선택 사항)
+            if t.estimated_remaining is not None and t.estimated_remaining > 0:
+                # 아주 단순한 예: 남은 퍼센트 기반 추정
+                t.estimated_remaining = max(1, int(t.estimated_remaining * (100 - percent) / 100))
+            db.commit()
+
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작", task_id)
+        # 중간 단계: generate_gps_art_impl 호출 시 콜백 전달
+        result = generate_gps_art_impl(
+            body=task.request_data, 
+            user_id=task.user_id, 
+            db=db,
+            on_progress=update_progress, # 진행 상태 콜백 전달
+        )
+
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료", task_id)
 
         task.status = "completed"
         task.progress = 100
         task.current_step = "completed"
         task.estimated_remaining = 0
         task.route_id = result["route_id"]
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now()
         db.commit()
     except Exception as e:
+        db.rollback()
         task = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
         if task:
             task.status = "failed"
             task.error_message = str(e)[:500]
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now()
             db.commit()
     finally:
         db.close()

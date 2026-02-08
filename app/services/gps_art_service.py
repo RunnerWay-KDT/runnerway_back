@@ -1,6 +1,6 @@
 from __future__ import annotations # 순환 참조 문제 방지
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Callable
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ValidationException
@@ -8,7 +8,13 @@ from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 
 
-def generate_gps_art_impl(*, body: dict, user_id: str, db: Session) -> dict:
+def generate_gps_art_impl(
+    *, 
+    body: dict, 
+    user_id: str, 
+    db: Session, 
+    on_progress: Optional[Callable[[int, str], None]] = None,
+) -> dict:
     route_id_from_body = body.get("route_id")
     shape_id = body.get("shape_id")
     target_km = float(body.get("target_distance_km", 5.0))
@@ -39,6 +45,7 @@ def generate_gps_art_impl(*, body: dict, user_id: str, db: Session) -> dict:
             shape_id=None,
             enable_rotation=enable_rotation,
             rotation_angles=rotation_angles,
+            on_progress=on_progress,
         )
         route_id = route.id
 
@@ -97,6 +104,7 @@ def generate_gps_art_impl(*, body: dict, user_id: str, db: Session) -> dict:
             shape_id=shape_id,
             enable_rotation=enable_rotation,
             rotation_angles=rotation_angles,
+            on_progress=on_progress,
         )
 
         route = Route(
@@ -136,6 +144,7 @@ def generate_gps_art_impl(*, body: dict, user_id: str, db: Session) -> dict:
             shape_id=None,
             enable_rotation=enable_rotation,
             rotation_angles=rotation_angles,
+            on_progress=on_progress,
         )
 
         route = Route(
@@ -176,12 +185,12 @@ def generate_gps_art_impl(*, body: dict, user_id: str, db: Session) -> dict:
             option_number=i + 1,
             name=option_names[i],
             distance=distance_km,
-            estimated_time=max(1, int(round(distance_km * 7))),
+            estimated_time=max(1, int(round(distance_km * 5))),
             difficulty=difficulty,
             tag=tags[i],
             coordinates=coords,
             safety_score=90 - i * 3,
-            elevation=0,
+            max_elevation_diff=0,
             lighting_score=0,
             sidewalk_score=0,
         )
