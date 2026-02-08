@@ -4,14 +4,16 @@
 # 경로 생성, 옵션 조회, 저장/삭제 등 경로 관련 API를 제공합니다.
 # AI 기반 경로 생성 및 안전도 평가 기능을 포함합니다.
 # ============================================
-
-from typing import Optional
-from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks
+from operator import ge
+from typing import Optional, List
+from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, Body
 from sqlalchemy.orm import Session
 from datetime import datetime
+from pydantic import BaseModel, Field
 import uuid
+import logging
 
-from app.db.database import get_db
+from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape
@@ -20,13 +22,16 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema,
+    RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
     SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
+from app.gps_art.generate_routes import generate_routes
+from app.models.route import Route, RouteOption, RouteShape
+from app.services.gps_art_service import generate_gps_art_impl
 
-
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routes", tags=["Routes"])
 
 
@@ -220,13 +225,18 @@ def get_route_generation_status(
     response_data = {
         "task_id": task.id,
         "status": task.status,
-        "route_id": task.route_id
+        "route_id": task.route_id,
+        "progress": getattr(task, "progress", 0) or 0,
+        "current_step": getattr(task, "current_step", None),
+        "estimated_remaining": getattr(task, "estimated_remaining", None), 
     }
-    
-    # 완료된 경우 경로 정보 포함
+
+     # 완료된 경우 경로 정보 포함
     if task.status == "completed" and task.route_id:
         response_data["route_id"] = task.route_id
-    
+        opts = db.query(RouteOption).filter(RouteOption.route_id == task.route_id).all()
+        response_data["option_ids"] = [str(o.id) for o in opts]
+
     # 실패한 경우 에러 메시지 포함
     if task.status == "failed":
         response_data["error"] = task.error_message
@@ -254,13 +264,13 @@ def get_route_generation_status(
     """
 )
 def get_route_options(
-    route_id: int = Path(..., description="경로 ID"),
+    route_id: str = Path(..., description="경로 ID (UUID)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """경로 옵션 조회 엔드포인트"""
     
-    # 경로 조회
+    # 경로 조회 (Route.id는 UUID 문자열)
     route = db.query(Route).filter(
         Route.id == route_id,
         Route.user_id == current_user.id
@@ -279,25 +289,40 @@ def get_route_options(
     
     option_list = []
     for opt in options:
+        coords = opt.coordinates if isinstance(opt.coordinates, list) else []
+        coord_schema = [{"lat": float(c.get("lat", 0)), "lng": float(c.get("lng", 0))} for c in coords]
         option_list.append(RouteOptionSchema(
-            id=opt.id,
-            type=opt.option_type,
+            id=str(opt.id),
+            option_number=opt.option_number,
+            name=opt.name,
             distance=float(opt.distance),
             estimated_time=opt.estimated_time,
-            safety_score=opt.safety_score,
-            elevation_gain=opt.elevation_gain,
-            path_preview=opt.path_data.get("coordinates", [])[:10] if opt.path_data else []
+            difficulty=opt.difficulty or "보통",
+            tag=opt.tag,
+            coordinates=coord_schema,
+            scores=RouteScoresSchema(
+                safety=getattr(opt, "safety_score", 0) or 0,
+                elevation=getattr(opt, "max_elevation_diff", 0) or 0,
+                lighting=getattr(opt, "lighting_score", 0) or 0,
+                sidewalk=getattr(opt, "sidewalk_score", 0) or 0,
+            ),
         ))
+    
+    shape_info = None
+    if route.shape:
+        shape_info = ShapeInfoSchema(
+            id=route.shape.id,
+            name=route.shape.name,
+            icon_name=route.shape.icon_name or "",
+            category=getattr(route.shape, "category", "") or "",
+            is_custom=False,
+        )
     
     return RouteOptionsResponseWrapper(
         success=True,
         data=RouteOptionsResponse(
-            route_id=route.id,
-            shape={
-                "id": route.shape.id if route.shape else None,
-                "name": route.shape.name if route.shape else None,
-                "icon": route.shape.icon_name if route.shape else None
-            },
+            route_id=str(route.id),
+            shape_info=shape_info,
             options=option_list
         )
     )
@@ -609,7 +634,7 @@ def save_custom_drawing(
             mode="none",    # 도형 그리기 (운동 모드 없음)
             start_latitude=request.location.latitude,
             start_longitude=request.location.longitude,
-            custom_svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
+            svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
             status="active"
         )
         
@@ -629,7 +654,7 @@ def save_custom_drawing(
             data=SaveCustomDrawingResponse(
                 route_id=route.id,
                 name=route.name,
-                svg_path=route.custom_svg_path,  # 컬럼명 수정
+                svg_path=route.svg_path,  # 컬럼명 수정
                 estimated_distance=request.estimated_distance,
                 created_at=route.created_at
             ),
@@ -648,3 +673,115 @@ def save_custom_drawing(
             field="route"
         )
 
+# ============================================
+# GPS 아트 경로 생성 (save_custom_drawing / get_shape_templates 활용)
+# ============================================
+@router.post(
+    "/generate-gps-art",
+    summary="GPS 아트 경로 생성",
+    description="""
+    - 커스텀: route_id 있으면 sav_custom_drawing으로 저장된 Route 사용, Option 3건만 추가
+    - 프리셋: get_shape_templates의 shape_id로 RouteShape 조회 후 Route 1건 + Option 3건 생성.
+    """,
+)
+def generate_gps_art(
+    body: dict = Body(..., example={
+        "route_id": "기존 Route UUID (커스텀 저장 후)",
+        "shape_id": None,
+        "target_distance_km": 5.0,
+        "start": {"lat": 37.5, "lng": 127.0},
+        "enable_rotation": True,
+        "rotation_angle": None,
+    }),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return generate_gps_art_impl(body=body, user_id=current_user.id, db=db)
+
+# GPS 아트 경로 생성 (비동기)
+@router.post(
+    "/generate-gps-art-async",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="GPS 아트 경로 생성 (비동기)",
+)
+def generate_gps_art_async(
+    body: dict = Body(...),
+    background_tasks: BackgroundTasks = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task_id = str(uuid.uuid4())
+    task = RouteGenerationTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="processing",
+        progress=0,
+        current_step="processing",
+        estimated_remaining=90,
+        request_data=body,
+    )
+    db.add(task)
+    db.commit()
+
+    background_tasks.add_task(_generate_gps_art_background, task_id)
+
+    return {"success": True, "data": {"task_id": task_id}}
+
+# 백그라운드 작업: GPS 아트 경로 생성
+def _generate_gps_art_background(task_id: str):
+    db = SessionLocal()
+    try:
+        task = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+        if not task:
+            return
+
+        # 중간중간 progress 업데이트 가능
+        task.progress = 5
+        task.current_step = "pending"
+        task.estimated_remaining = 90
+        db.commit()
+
+        def update_progress(percent: int, step: str):
+            # progress 업데이트 함수
+            t = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+            if not t:
+                logger.warning("[GPS 아트 경로 생성] 백그라운드 작업 중 태스크 조회 실패", task_id)
+                return
+            t.progress = max(t.progress or 0, min(percent, 99))
+            t.current_step = step
+            # 대충 남은 시간도 비례해서 줄여주는 예시 (선택 사항)
+            if t.estimated_remaining is not None and t.estimated_remaining > 0:
+                # 아주 단순한 예: 남은 퍼센트 기반 추정
+                t.estimated_remaining = max(1, int(t.estimated_remaining * (100 - percent) / 100))
+            db.commit()
+
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작", task_id)
+        # 중간 단계: generate_gps_art_impl 호출 시 콜백 전달
+        result = generate_gps_art_impl(
+            body=task.request_data, 
+            user_id=task.user_id, 
+            db=db,
+            on_progress=update_progress, # 진행 상태 콜백 전달
+        )
+
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료", task_id)
+
+        task.status = "completed"
+        task.progress = 100
+        task.current_step = "completed"
+        task.estimated_remaining = 0
+        task.route_id = result["route_id"]
+        task.completed_at = datetime.now()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        task = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
+        if task:
+            task.status = "failed"
+            task.error_message = str(e)[:500]
+            task.completed_at = datetime.now()
+            db.commit()
+    finally:
+        db.close()
+    
+        

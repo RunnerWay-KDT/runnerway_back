@@ -41,7 +41,7 @@ class ShapeInfoSchema(BaseModel):
 
 class CustomPathSchema(BaseModel):
     """커스텀 경로 스키마 (직접 그리기)"""
-    svg_url: Optional[str] = Field(None, description="SVG URL 데이터")
+    svg_path: Optional[str] = Field(None, description="SVG URL 데이터")
     estimated_distance: Optional[float] = Field(None, description="예상 거리 (km)")
 
 
@@ -118,7 +118,7 @@ class RouteGenerateRequest(BaseModel):
     shape_name: Optional[str] = Field(None, description="도형 이름")
     
     # 커스텀 경로 정보
-    custom_path: Optional[CustomPathSchema] = Field(None, description="커스텀 경로 데이터")
+    svg_path: Optional[CustomPathSchema] = Field(None, description="커스텀 경로 데이터")
     
     # 위치 정보
     location: LocationSchema = Field(..., description="시작 위치")
@@ -310,7 +310,7 @@ class RouteDetailResponse(BaseModel):
     mode: Optional[str] = None
     start_latitude: float
     start_longitude: float
-    custom_svg_url: Optional[str] = None
+    svg_path: Optional[str] = None
     condition: Optional[str] = None
     intensity: Optional[str] = None
     target_duration: Optional[int] = None

@@ -35,7 +35,7 @@ class RouteShape(Base):
     icon_name = Column(String(50), nullable=False, comment='아이콘 이름')
     category = Column(String(20), nullable=False, comment='카테고리 (shape, animal)')
     estimated_distance = Column(DECIMAL(5, 2), nullable=True, comment='예상 거리 (km)')
-    svg_url = Column(Text, nullable=True, comment='SVG url')
+    svg_path = Column(Text, nullable=True, comment='SVG url')
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
@@ -69,7 +69,7 @@ class Route(Base):
     start_longitude = Column(DECIMAL(10, 7), nullable=False, comment='시작점 경도')
     
     # ========== 커스텀 경로 데이터 ==========
-    custom_svg_path = Column(Text, nullable=True, comment='SVG Path 데이터 (커스텀인 경우)')
+    svg_path = Column(Text, nullable=True, comment='SVG Path 데이터 (커스텀인 경우)')
     
     # ========== 운동 설정 ==========
     # 러닝 설정
@@ -119,7 +119,7 @@ class RouteOption(Base):
     
     # ========== 점수/특성 ==========
     safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
-    elevation = Column(Integer, default=0, comment='고도차 (m)')
+    max_elevation_diff = Column(Integer, default=0, comment='고도차 (m)')
     lighting_score = Column(Integer, default=0, comment='조명 점수 (0-100)')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

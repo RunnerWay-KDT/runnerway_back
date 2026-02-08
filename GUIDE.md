@@ -432,7 +432,7 @@ CREATE TABLE route_shapes (
     icon_name VARCHAR(50) NOT NULL,         -- 'heart-outline'
     category VARCHAR(20) NOT NULL,          -- 'basic', 'special', 'fun'
     estimated_distance DECIMAL(5,2),        -- 예상 거리 (km)
-    svg_template TEXT,                      -- SVG 경로 데이터
+    svg_path TEXT,                      -- SVG 경로 데이터
     is_active TINYINT DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -458,7 +458,7 @@ CREATE TABLE routes (
     start_longitude DECIMAL(10,7) NOT NULL,
     location_address VARCHAR(255),
     location_district VARCHAR(50),
-    custom_svg_path TEXT,               -- 사용자가 직접 그린 경로
+    svg_path TEXT,               -- 사용자가 직접 그린 경로
     custom_points LONGTEXT,             -- JSON 형식 좌표
     condition VARCHAR(20),              -- 'distance', 'duration'
     intensity VARCHAR(20),              -- 'easy', 'normal', 'hard'
