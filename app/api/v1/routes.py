@@ -285,7 +285,7 @@ def get_route_options(
     # 옵션 목록 조회
     options = db.query(RouteOption).filter(
         RouteOption.route_id == route_id
-    ).all()
+    ).order_by(RouteOption.option_number).all()
     
     option_list = []
     for opt in options:
@@ -304,7 +304,6 @@ def get_route_options(
                 safety=getattr(opt, "safety_score", 0) or 0,
                 elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
-                sidewalk=getattr(opt, "sidewalk_score", 0) or 0,
             ),
         ))
     

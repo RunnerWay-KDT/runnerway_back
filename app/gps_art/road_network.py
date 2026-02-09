@@ -1,5 +1,6 @@
 import osmnx as ox
 import networkx as nx
+import numpy as np
 from typing import Tuple, List, Optional, Dict
 import logging
 from math import radians, cos, sin, asin, sqrt
@@ -447,3 +448,30 @@ if __name__ == "__main__":
         print("\n옵션:")
         for i, option in enumerate(validation["options"], 1):
             print(f"  {i}. {option}")
+
+def haversine_matrix_meters(
+    lon1: np.ndarray, lat1: np.ndarray,
+    lon2: np.ndarray, lat2: np.ndarray,
+) -> np.ndarray:
+    """
+    (N,) vs (M,) -> (N, M) 하버 사인 거리 행렬 (미터 단위).
+
+    lon1, lat1: (N,) 도 단위
+    lon2, lat2: (M,) 도 단위
+    반환값: shape (N, M), [i, j] = (lon1[i], lat1[i]) ~ (lon2[j], lat2[j]) 거리(m)
+    """
+    lon1_rad = np.deg2rad(lon1)
+    lat1_rad = np.deg2rad(lat1)
+    lon2_rad = np.deg2rad(lon2)
+    lat2_rad = np.deg2rad(lat2)
+
+    # (N, 1) - (1, M) 브로드캐스트 (for문이 아닌 행렬 연산으로 한 번에 계산)
+    dlon = lon2_rad - lon1_rad[:, None] # (N, M)
+    dlat = lat2_rad - lat1_rad[:, None]
+
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1_rad)[:, None] * np.cos(lat2_rad)[None, :] * np.sin(dlon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
+    c = 2.0 * np.arcsin(np.sqrt(a))
+    r = 6371000.0
+
+    return r * c

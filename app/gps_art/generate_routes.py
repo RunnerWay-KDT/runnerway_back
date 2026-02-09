@@ -131,37 +131,41 @@ def generate_routes(
                 if not wp_nodes:
                     continue
 
-            # 시작 인덱스 k마다 경로 생성 후 유사도 계산 -> 최고인 k만 사용
-            best_sim = float('inf')
-            best_node_path = None
-            for k in range(len(wp_nodes)):
-                node_path_k = router.build_full_path(wp_nodes, k)
-                if not node_path_k:
+                # 시작 인덱스 k마다 경로 생성 후 유사도 계산 -> 최고인 k만 사용
+                best_sim = float('inf')
+                best_node_path = None
+                for k in range(len(wp_nodes)):
+                    node_path_k = router.build_full_path(wp_nodes, k)
+                    if not node_path_k:
+                        continue
+                    info_k = fetcher.get_path_info(graph, node_path_k)
+                    sim_k = router.calculate_route_similarity(
+                        original_drawing=scaled,
+                        generated_route=info_k["coordinates"],
+                    )
+                    if sim_k < best_sim:
+                        best_sim = sim_k
+                        best_node_path = node_path_k
+
+                if best_node_path is None:
                     continue
-                info_k = fetcher.get_path_info(graph, node_path_k)
-                sim_k = router.calculate_route_similarity(
-                    original_drawing=scaled,
-                    generated_route=info_k["coordinates"],
-                )
-                if sim_k < best_sim:
-                    best_sim = sim_k
-                    best_node_path = node_path_k
 
-            if best_node_path is None:
-                continue
+                info = fetcher.get_path_info(graph, best_node_path)            
+                candidate = {
+                    "id": 1,
+                    "angle": float(angle),
+                    "distance_m": info["distance"],
+                    "distance_km": info["distance_km"],
+                    "coordinates": info["coordinates"],
+                    "similarity_score": best_sim,
+                }
+                if return_node_paths:
+                    candidate["node_path"] = best_node_path
+        
+                all_candidates.append((float(angle), scaled, candidate))
 
-            info = fetcher.get_path_info(graph, best_node_path)            
-            candidate = {
-                "id": 1,
-                "angle": float(angle),
-                "distance_m": info["distance"],
-                "distance_km": info["distance_km"],
-                "coordinates": info["coordinates"],
-                "similarity_score": best_sim,
-            }
-            if return_node_paths:
-                candidate["node_path"] = best_node_path
-            all_candidates.append((float(angle), scaled, candidate))
+        if on_progress:
+            on_progress(85, "processing")
                 
         # 각도별 1등을 유사도로 정렬 후 상위 3개를 최종 routes로
         all_candidates.sort(key=lambda x: x[2]["similarity_score"])
@@ -169,6 +173,9 @@ def generate_routes(
         best_routes = [item[2] for item in top3]
         for i, r in enumerate(best_routes, start=1):
             r["id"] = i
+
+        if on_progress:
+            on_progress(92, "processing")
 
         # top3 각 경로에 해당 각도의 원본 path(scaled_drawing) 추가
         for item, r in zip(top3, best_routes):
@@ -186,6 +193,9 @@ def generate_routes(
         scale_drawing_for_kakao = [
             {"lat": lat, "lng": lon} for (lon, lat) in best_scaled
         ]
+
+        if on_progress:
+            on_progress(99, "processing")
 
         return {
             "routes": best_routes,

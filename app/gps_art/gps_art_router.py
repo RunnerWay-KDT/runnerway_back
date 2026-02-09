@@ -1,6 +1,6 @@
 from queue import PriorityQueue
 from typing import List, Tuple, Dict, Optional
-from .road_network import haversine_distance, RoadNetworkFetcher
+from .road_network import haversine_distance, RoadNetworkFetcher, haversine_matrix_meters
 from collections import defaultdict
 import networkx as nx
 import numpy as np
@@ -707,54 +707,64 @@ class GPSArtRouter:
             generated_route: 생성된 경로 좌표 리스트 [{"lat": ..., "lon": ...}, ...]
 
         Returns:
-            유사도 점수 (낮을수록 유사함, 평균 거리 미터 단위)
+             유사도 점수 (낮을수록 유사함, 평균 거리 미터 단위)
+
+            - drawing → route: 그림 샘플 포인트에서 경로까지 최소거리 평균
+            - route → drawing: 경로 포인트에서 그림까지 최소거리 평균
+            - 최종 점수 = (앞/뒤 평균) / 2
         """
         if not original_drawing or not generated_route:
             return float('inf')
 
-        # 생성된 경로를 (lon, lat) 튜플로 변환
-        route_coords = [(pt["lng"], pt["lat"]) for pt in generated_route] # 카카오 응답 형식
+        # 그림 좌표 (N, 2) [lon, lat]
+        drawing_arr = np.asarray(original_drawing, dtype=float)
+        if drawing_arr.shape[0] < 2:
+            return float("inf")
 
-        # 원본 그림을 세그먼트로 분할
-        original_segments = []
-        for i in range(len(original_drawing) - 1):
-            original_segments.append((original_drawing[i], original_drawing[i + 1]))
+        # 경로 좌표 (R, 2) [lon, lat] (카카오 {lat, lng} 형식)
+        route_arr = np.asarray(
+            [(pt["lng"], pt["lat"]) for pt in generated_route],
+            dtype=float,
+        )
+        if route_arr.shape[0] == 0:
+            return float("inf")
 
-        # 각 원본 세그먼트에 대해 가장 가까운 경로 점 찾기
-        total_distance = 0.0
-        segment_count = 0
+        # 그림 세그먼트 위 샘플 포인트들 (D, 2) 생성
+        n_seg = drawing_arr.shape[0] - 1 # 점의 개수 - 1 = 세그먼트 개수
+        # linspace: 0.0 ~ 1.0 사이를 n_samples + 1개의 점으로 나누어 반환
+        t = np.linspace(0.0, 1.0, self.n_samples + 1)
+        samples_list = []
+        for i in range(n_seg):
+            s = drawing_arr[i]
+            e = drawing_arr[i + 1]
+            lons = s[0] + t * (e[0] - s[0])
+            lats = s[1] + t * (e[1] - s[1])
+            # stack: 리스트의 각 배열을 가로로 쌓아서 하나의 배열로 변환
+            samples_list.append(np.stack([lons, lats], axis=1))
+        # vstack: 리스트의 각 배열을 세로로 쌓아서 하나의 배열로 변환
+        drawing_samples = np.vstack(samples_list) # (D, 2)
 
-        for i in range(len(original_segments) - 1):
-            s = original_drawing[i]
-            e = original_drawing[i + 1]
-            min_distance = float('inf')
+        draw_lons = drawing_samples[:, 0]
+        draw_lats = drawing_samples[:, 1]
+        route_lons = route_arr[:, 0]
+        route_lats = route_arr[:, 1]
 
-            # 원본 세그먼트의 중간점들 샘플링
-            for k in range(self.n_samples + 1):
-                t = k / self.n_samples
-                # 세그먼트 위의 점
-                lon = s[0] + t * (e[0] - s[0])
-                lat = s[1] + t * (e[1] - s[1])
-                orig_point = (lon, lat)
+        # 거리 행렬 (D, R) 한 번에 계싼
+        dist_DR = haversine_matrix_meters(
+            draw_lons, draw_lats,
+            route_lons, route_lats,
+        ) # shape (D, R)
 
-                # 생성된 경로에서 가장 가까운 점 찾기
-                min_point_dist = float('inf')
-                for route_point in route_coords:
-                    dist = haversine_distance(orig_point, route_point)
-                    if dist < min_point_dist:
-                        min_point_dist = dist
+        # 그림 -> 경로: 각 그림 샘플에서 가장 가까운 경로 점까지 거리 평균
+        d2r_min = dist_DR.min(axis=1) # (D,)
+        score_drawing_to_route = float(d2r_min.mean())
 
-                if min_point_dist < min_distance:
-                    min_distance = min_point_dist
+        # 경로 -> 그림: 각 경로 점에서 가장 가까운 그림 샘플까지 거리 평균
+        r2d_min = dist_DR.min(axis=0) # (R,)
+        score_route_to_drawing = float(r2d_min.mean())
 
-            total_distance += min_distance
-            segment_count += 1
-
-        # 평균 거리 반환
-        if segment_count == 0:
-            return float('inf')
-
-        return total_distance / segment_count
+        # 양방향 평균
+        return (score_drawing_to_route + score_route_to_drawing) / 2.0
 
 # 사용 예시
 if __name__ == "__main__":
