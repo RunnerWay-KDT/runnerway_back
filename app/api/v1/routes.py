@@ -111,10 +111,21 @@ def request_route_generation(
     db.commit()
     
     # 백그라운드에서 경로 생성 실행
+    # 백그라운드에서 경로 생성 실행
+    # 2024-02-06 Fix: 동기 래퍼 함수를 사용하여 비동기 함수 실행 및 DB 세션 안전하게 관리
+    from app.services.background_tasks import run_generate_route_background
+    
     background_tasks.add_task(
-        generate_route_background,
+        run_generate_route_background,
         task_id=task_id,
-        db=db
+        user_id=current_user.id,
+        request_data={
+            'lat': request.start_location.lat,
+            'lng': request.start_location.lng,
+            'target_time_min': None, # 거리 기반이므로 시간은 None
+            'target_distance_km': request.distance,
+            'prompt': request.avoid_steep and "안전" or "" # 예시
+        }
     )
     
     return RouteGenerateResponseWrapper(
@@ -990,7 +1001,7 @@ async def recommend_route_async(
     Returns:
         {"task_id": str} - Task ID를 반환, 이후 진행률 확인 가능
     """
-    from app.services.background_tasks import generate_route_background
+    from app.services.background_tasks import run_generate_route_background
     
     # Task 생성
     task = RouteGenerationTask(
@@ -1014,11 +1025,10 @@ async def recommend_route_async(
     
     # 백그라운드에서 경로 생성 실행
     background_tasks.add_task(
-        generate_route_background,
-        task.id,
-        current_user.id,
-        task.request_data,
-        db
+        run_generate_route_background,
+        task_id=task.id,
+        user_id=current_user.id,
+        request_data=task.request_data
     )
     
     # task_id 즉시 반환

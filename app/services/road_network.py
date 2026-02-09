@@ -578,7 +578,8 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
         G: nx.Graph,
         start_node: int,
         target_distance_km: float,
-        attempt_number: int = 0
+        attempt_number: int = 0,
+        weight: str = 'length'
     ) -> List[int]:
         """
         출발지에서 목표 거리만큼의 루프 경로를 생성합니다.
@@ -588,6 +589,7 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
             start_node: 출발 노드 ID
             target_distance_km: 목표 거리 (km)
             attempt_number: 시도 횟수 (다양한 방향 생성을 위해 사용)
+            weight: 경로 탐색 가중치 ('length', 'weight_easy', 'weight_hard')
             
         Returns:
             노드 ID 리스트 (경로)
@@ -660,7 +662,7 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
         
         # 2. 경로 탐색 (가는 길)
         try:
-            route_to = nx.shortest_path(G, start_node, dest_node, weight='length')
+            route_to = nx.shortest_path(G, start_node, dest_node, weight=weight)
         except nx.NetworkXNoPath:
             return []
             
@@ -674,21 +676,24 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
                 if 0 in edge_data:
                     edge_data = edge_data[0]
                 
-                if 'length' in edge_data:
-                    original_weights[(u, v)] = edge_data['length']
-                    edge_data['length'] *= 10 # 페널티
+                # 가중치 키가 존재하는지 확인
+                current_weight_key = weight if weight in edge_data else 'length'
+                
+                if current_weight_key in edge_data:
+                    original_weights[(u, v, current_weight_key)] = edge_data[current_weight_key]
+                    edge_data[current_weight_key] *= 10 # 페널티
         
         try:
-            route_from = nx.shortest_path(G, dest_node, start_node, weight='length')
+            route_from = nx.shortest_path(G, dest_node, start_node, weight=weight)
         except nx.NetworkXNoPath:
             route_from = route_to[::-1] # 되돌아오기
         finally:
             # 가중치 복구
-            for (u, v), w in original_weights.items():
+            for (u, v, k), w in original_weights.items():
                 if G.has_edge(u, v):
                      edge_data = G.get_edge_data(u, v)
                      if 0 in edge_data: edge_data = edge_data[0]
-                     edge_data['length'] = w
+                     edge_data[k] = w
                      
         # 4. 경로 합치기
         full_route = route_to + route_from[1:]

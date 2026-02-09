@@ -35,12 +35,31 @@ def update_task_progress(
     ).first()
     
     if task:
-        task.progress = progress
-        task.current_step = current_step
         if estimated_remaining is not None:
             task.estimated_remaining = estimated_remaining
         db.commit()
         logger.info(f"Task {task_id}: {progress}% - {current_step}")
+
+
+def run_generate_route_background(task_id: str, user_id: str, request_data: Dict[str, Any]):
+    """
+    백그라운드 작업을 실행하기 위한 동기 래퍼 함수.
+    새로운 DB 세션을 생성하고 비동기 함수를 실행합니다.
+    """
+    from app.db.database import SessionLocal
+    
+    print(f"🚀 Background Task Wrapper Started for Task {task_id}")
+    db = SessionLocal()
+    try:
+        print(f"🔄 Starting asyncio.run for Task {task_id}")
+        asyncio.run(generate_route_background(task_id, user_id, request_data, db))
+        print(f"✅ asyncio.run completed for Task {task_id}")
+    except Exception as e:
+        print(f"❌ Background task execution failed: {e}")
+        logger.error(f"Background task execution failed: {e}", exc_info=True)
+    finally:
+        db.close()
+        print(f"🏁 DB Session closed for Task {task_id}")
 
 
 async def generate_route_background(
@@ -51,13 +70,8 @@ async def generate_route_background(
 ):
     """
     백그라운드에서 경로 생성 실행
-    
-    Args:
-        task_id: Task ID
-        user_id: 사용자 ID
-        request_data: 경로 생성 요청 데이터
-        db: DB 세션
     """
+    print(f"▶️ generate_route_background started for Task {task_id}")
     try:
         # 0% - 시작
         update_task_progress(db, task_id, 0, "경로 생성 시작 중...", 30)
@@ -93,11 +107,21 @@ async def generate_route_background(
         else:
             target_dist_km = target_distance_km or 3.0
         
+        
         # 10% - 도로 네트워크 가져오기
         update_task_progress(db, task_id, 10, "도로 데이터 가져오는 중...", 25)
         
+        # routes.py와 동일한 반경 계산 로직 적용 (3000m 제한 해제)
+        radius_meter = (target_dist_km / 2) * 1000 * 1.1
+        if radius_meter < 1500: 
+            radius_meter = 1500
+        if radius_meter > 8000:
+            logger.warning(f"Capping radius at 8000m (target: {target_dist_km:.1f}km)")
+            radius_meter = 8000
+            
+        print(f"🛣️ Fetching road network for Task {task_id} (radius: {radius_meter}m)...")
+        
         fetcher = RoadNetworkFetcher()
-        radius_meter = min(target_dist_km * 1000 * 0.6, 3000)
         
         # Blocking Call을 쓰레드풀로 이관하여 이벤트 루프 차단 방지
         G = await asyncio.to_thread(
@@ -105,33 +129,48 @@ async def generate_route_background(
             (lat, lng),
             radius_meter
         )
+        print(f"✅ Road network fetched for Task {task_id}")
         
         # 30% - 고도 데이터 가져오기
         update_task_progress(db, task_id, 30, "고도 데이터 가져오는 중...", 20)
+        print(f"⛰️ Fetching elevation data for Task {task_id}...")
         
         await fetcher.add_elevation_to_nodes_async(G, db=db)
         
         # CPU 연산이 많은 작업도 쓰레드풀로 이관
+        print(f"📐 Calculating grades for Task {task_id}...")
         await asyncio.to_thread(fetcher.calculate_edge_grades_and_weights, G)
         
         # 50% - 경로 생성
         update_task_progress(db, task_id, 50, "경로 계산 중...", 15)
+        print(f"🔄 Generating candidates for Task {task_id}...")
         
         candidate_routes = []
         num_candidates = 6
+        
+        logger.info(f"Task {task_id}: Generating {num_candidates} candidates...")
         
         for i in range(num_candidates):
             try:
                 start_node = fetcher.get_nearest_node(G, (lat, lng))
                 
+                # 난이도에 따른 가중치 키 선택
+                weight_key = 'length'
+                if condition == "recovery":
+                    weight_key = 'weight_easy'
+                elif condition == "challenge":
+                    weight_key = 'weight_hard'
+                
                 # 경로 탐색 알고리즘(Dijkstra/A*) 역시 CPU 집약적이므로 비동기 처리
                 full_route = await asyncio.to_thread(
                     fetcher.generate_loop_route,
                     G, start_node, target_dist_km,
-                    attempt_number=i
+                    attempt_number=i,
+                    weight=weight_key
                 )
                 
                 if not full_route or len(full_route) < 2:
+                    logger.warning(f"Task {task_id}: Candidate {i+1} empty or too short.")
                     continue
                 
                 real_distance_km = fetcher.calculate_path_distance(G, full_route) / 1000
@@ -149,15 +188,18 @@ async def generate_route_background(
                     'coords': path_coords,
                     'stats': stats
                 })
+                logger.info(f"Task {task_id}: Candidate {i+1} generated ({real_distance_km:.2f}km)")
                 
                 # 진행률 업데이트 (50-70%)
                 progress = 50 + int((i + 1) / num_candidates * 20)
                 update_task_progress(db, task_id, progress, f"경로 계산 중 ({i+1}/{num_candidates})...", 10)
                 
             except Exception as e:
-                logger.error(f"Candidate {i+1} failed: {e}")
+                logger.error(f"Candidate {i+1} failed: {e}", exc_info=True)
                 continue
         
+        logger.info(f"Task {task_id}: Total {len(candidate_routes)} candidates generated.")
+
         # 70% - 자기 교차 필터링
         update_task_progress(db, task_id, 70, "경로 검증 중...", 8)
         
@@ -168,10 +210,17 @@ async def generate_route_background(
             if not has_self_intersection(route_data['coords']):
                 valid_candidates.append(route_data)
             else:
+                logger.warning(f"Task {task_id}: Candidate {route_data['id']} rejected (self-intersection).")
                 rejected_count += 1
         
         if len(valid_candidates) < 1:
-            raise ValueError("유효한 경로를 생성할 수 없습니다")
+            if len(candidate_routes) > 0:
+                 # 교차 검증 실패 시, fallback으로 가장 긴 경로 하나라도 선택
+                 logger.warning(f"Task {task_id}: All candidates rejected by intersection check. Using the first candidate as fallback.")
+                 valid_candidates.append(candidate_routes[0])
+            else:
+                 logger.error(f"Task {task_id}: No candidates generated at all.")
+                 raise ValueError("유효한 경로를 생성할 수 없습니다 (No viable routes found)")
         
         # 85% - 경로 정렬 및 선택
         update_task_progress(db, task_id, 85, "최적 경로 선택 중...", 5)
