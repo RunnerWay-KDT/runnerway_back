@@ -192,7 +192,6 @@ def generate_gps_art_impl(
             safety_score=90 - i * 3,
             max_elevation_diff=0,
             lighting_score=0,
-            sidewalk_score=0,
         )
         db.add(opt)
         db.flush()
