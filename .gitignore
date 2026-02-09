@@ -147,7 +147,8 @@ media/
 static/uploaded/
 
 # 캐시
-.cache/
+cache/
+./cache/
 *.cache
 
 # mypy (타입 체크)
