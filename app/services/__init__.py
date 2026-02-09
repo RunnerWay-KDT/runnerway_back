@@ -23,6 +23,7 @@ from app.services.auth_service import AuthService
 from app.services.route_service import RouteService
 from app.services.workout_service import WorkoutService
 from app.services.community_service import CommunityService
+from app.services.gps_art_service import generate_gps_art_impl
 
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "RouteService",
     "WorkoutService",
     "CommunityService",
+    "generate_gps_art_impl",
 ]
