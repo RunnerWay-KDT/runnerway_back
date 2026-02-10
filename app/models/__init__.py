@@ -47,7 +47,6 @@ from app.models.community import (
     Comment,
     CommentLike
 )
-from app.models.elevation import ElevationCache
 
 # 외부에서 import할 수 있는 모델 목록
 __all__ = [
@@ -73,6 +72,4 @@ __all__ = [
     "PostBookmark",
     "Comment",
     "CommentLike",
-    # Elevation 관련
-    "ElevationCache"
 ]

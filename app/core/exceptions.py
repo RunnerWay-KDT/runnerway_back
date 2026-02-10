@@ -279,7 +279,7 @@ class ExternalAPIException(RunnerWayException):
     """
     외부 API 호출 실패 예외 (502)
     
-    Open-Meteo, OSMnx 등 외부 서비스 호출 실패 시 사용
+    OSMnx 등 외부 서비스 호출 실패 시 사용
     """
     def __init__(self, message: str = "외부 서비스 호출에 실패했습니다"):
         super().__init__(

@@ -138,11 +138,11 @@ async def generate_route_background(
         )
         print(f"✅ Road network fetched for Task {task_id}")
         
-        # 30% - 고도 데이터 가져오기
+        # 30% - 고도 데이터 가져오기 (SRTM 로컬 데이터)
         update_task_progress(db, task_id, 30, "고도 데이터 가져오는 중...", 20)
         print(f"⛰️ Fetching elevation data for Task {task_id}...")
         
-        await fetcher.add_elevation_to_nodes_async(G, db=db)
+        await asyncio.to_thread(fetcher.add_elevation_to_nodes, G)
         
         # CPU 연산이 많은 작업도 쓰레드풀로 이관
         print(f"📐 Calculating grades for Task {task_id}...")
@@ -229,11 +229,30 @@ async def generate_route_background(
             logger.error(f"Task {task_id}: No routes generated at all.")
             raise ValueError("유효한 경로를 생성할 수 없습니다 (No viable routes found)")
         
-        # 85% - DB 저장 준비
-        update_task_progress(db, task_id, 85, "최적 경로 선택 중...", 5)
+        # 85% - 고도 기반 난이도 순위 계산
+        update_task_progress(db, task_id, 85, "난이도 순위 계산 중...", 5)
         
+        # 고도 변화량(elevation_change) 기준으로 정렬하여 상대적 난이도 부여
+        difficulty_labels = ["쉬움", "보통", "어려움"]
+        if len(generated_routes) >= 2:
+            # elevation_change 기준으로 인덱스 정렬 (오름차순: 낮은 고도변화 = 쉬움)
+            sorted_indices = sorted(
+                range(len(generated_routes)),
+                key=lambda i: generated_routes[i]['elevation_change']
+            )
+            difficulty_map = {}
+            if len(generated_routes) == 3:
+                for rank, idx in enumerate(sorted_indices):
+                    difficulty_map[idx] = difficulty_labels[rank]
+            elif len(generated_routes) == 2:
+                difficulty_map[sorted_indices[0]] = "쉬움"
+                difficulty_map[sorted_indices[1]] = "어려움"
+        else:
+            difficulty_map = {0: "보통"}
         
-        # 90% - DB 저장 (선택적)
+        logger.info(f"Task {task_id}: Difficulty ranking: {[(generated_routes[i]['name'], difficulty_map[i], f'{generated_routes[i][\"elevation_change\"]:.1f}m') for i in range(len(generated_routes))]}")
+        
+        # 90% - DB 저장
         update_task_progress(db, task_id, 90, "결과 저장 중...", 3)
         
         # Route 생성
@@ -261,10 +280,11 @@ async def generate_route_background(
                 estimated_time=route_data['time'],
                 recommended_pace=format_pace_string(pace_min_per_km),
                 condition_type=condition,
-                difficulty=route_data['name'],
+                difficulty=difficulty_map.get(idx, "보통"),
                 tag=route_data['tag'],
                 coordinates=route_data['coords'],
                 safety_score=85,
+                max_elevation_diff=route_data['stats'].get('max_elevation_diff', 0),
                 total_ascent=route_data['stats']['total_ascent'],
                 total_descent=calculate_total_descent(G, route_data['route']),
                 total_elevation_change=route_data['elevation_change'],

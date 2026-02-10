@@ -1,7 +1,6 @@
 import osmnx as ox
 import networkx as nx
 from typing import Tuple, List, Optional, Dict
-from sqlalchemy.orm import Session
 import logging
 from math import radians, cos, sin, asin, sqrt
 from app.core.exceptions import ExternalAPIException
@@ -183,37 +182,39 @@ class RoadNetworkFetcher:
 
         return G_undirected
 
-    # 고도 데이터 추가 (비동기 지원)
-    async def add_elevation_to_nodes_async(
-        self, 
-        G: nx.Graph, 
-        db: Optional[Session] = None
-    ) -> nx.Graph:
+    # 고도 데이터 추가
+    def add_elevation_to_nodes(self, G: nx.Graph) -> nx.Graph:
         """
-        노드에 고도(elevation) 데이터를 비동기로 추가합니다 (캐시 우선).
+        노드에 고도(elevation) 데이터를 추가합니다 (SRTM 로컬 데이터 사용).
         """
-        if db:
-            # logger.info("Using ElevationService with DB Cache...")
+        try:
             from app.services.elevation_service import ElevationService
             
-            # Context Manager 패턴으로 리소스 자동 관리
-            async with ElevationService(db) as elevation_service:
-                # 모든 노드 좌표 추출
-                all_nodes = list(G.nodes())
-                coordinates = [(G.nodes[node]['y'], G.nodes[node]['x']) for node in all_nodes]
-                
-                # 배치 조회 (캐시 활용)
-                elevations = await elevation_service.get_elevations_batch(coordinates)
-                
-                # 노드에 반영
-                for node in all_nodes:
-                    lat, lon = G.nodes[node]['y'], G.nodes[node]['x']
-                    G.nodes[node]['elevation'] = elevations.get((lat, lon), 20.0)
-                    
-            # logger.info(f"Elevation update completed using cache/API.")
-        else:
-            # logger.info("No DB session provided. Using simulated elevation data.")
+            elevation_service = ElevationService()
+            
+            # 모든 노드 좌표 추출 (GraphML 캐시에서 로드 시 문자열일 수 있으므로 float 변환 필수)
+            all_nodes = list(G.nodes())
+            coordinates = [(float(G.nodes[node]['y']), float(G.nodes[node]['x'])) for node in all_nodes]
+            
+            # 배치 조회
+            elevations = elevation_service.get_elevations_batch(coordinates)
+            
+            # 노드에 반영 (float 변환 보장)
+            applied_count = 0
+            for node in all_nodes:
+                lat = float(G.nodes[node]['y'])
+                lon = float(G.nodes[node]['x'])
+                elev = elevations.get((lat, lon), 20.0)
+                G.nodes[node]['elevation'] = float(elev)
+                if elev != 20.0:
+                    applied_count += 1
+            
+            logger.info(f"⛰️ Elevation applied: {applied_count}/{len(all_nodes)} nodes got real data (rest=20.0 default)")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ SRTM 고도 조회 실패, 시뮬레이션 데이터 사용: {e}")
             self._add_simulated_elevation(G)
+        
         return G
 
 
@@ -250,20 +251,25 @@ class RoadNetworkFetcher:
     # 엣지에 경사도 및 가중치 계산
     def calculate_edge_grades_and_weights(self, G: nx.Graph):
         """노드 간 고도 차이를 이용해 경사도(grade)를 구하고 가중치를 설정합니다."""
+        non_zero_grades = 0
         for u, v, data in G.edges(data=True):
             # 노드 데이터 가져오기
             node_u = G.nodes[u]
             node_v = G.nodes[v]
             
             if 'elevation' in node_u and 'elevation' in node_v:
-                # 고도 차이 (미터)
-                elev_diff = node_v['elevation'] - node_u['elevation']
-                dist = data.get('length', 1.0)
+                # 고도 차이 (미터) - float 변환 보장
+                elev_u = float(node_u['elevation'])
+                elev_v = float(node_v['elevation'])
+                elev_diff = elev_v - elev_u
+                dist = float(data.get('length', 1.0))
                 if dist < 1.0: dist = 1.0 # 0 나누기 방지
                 
                 # 경사도 (%)
                 grade = (elev_diff / dist)
                 data['grade'] = grade
+                if abs(grade) > 0.001:
+                    non_zero_grades += 1
                 
                 # 가중치 계산 (보행자는 오르막/내리막 모두 힘듦)
                 abs_grade = abs(grade)
@@ -274,8 +280,10 @@ class RoadNetworkFetcher:
                 data['weight_hard'] = dist * (1 + (0.5 - abs_grade) * 2) if abs_grade < 0.2 else dist
             else:
                 data['grade'] = 0
-                data['weight_easy'] = data.get('length', 1.0)
-                data['weight_hard'] = data.get('length', 1.0)
+                data['weight_easy'] = float(data.get('length', 1.0))
+                data['weight_hard'] = float(data.get('length', 1.0))
+        
+        logger.info(f"📐 Edge grades calculated: {non_zero_grades}/{G.number_of_edges()} edges have non-zero grade")
 
     # 경로의 총 거리를 계산
     def calculate_path_distance(
@@ -371,7 +379,10 @@ class RoadNetworkFetcher:
     def get_elevation_stats(self, G: nx.Graph, path: List[int]) -> Dict:
         """경로의 고도 통계(총 상승 고도, 평균 경사도 등)를 계산합니다."""
         total_ascent = 0.0
+        total_descent = 0.0
         grades = []
+        elevations = []
+        total_elevation_change = 0.0
         
         for i in range(len(path) - 1):
             u, v = path[i], path[i+1]
@@ -379,20 +390,49 @@ class RoadNetworkFetcher:
             node_v = G.nodes[v]
             
             if 'elevation' in node_u and 'elevation' in node_v:
-                diff = node_v['elevation'] - node_u['elevation']
+                elev_u = float(node_u['elevation'])
+                elev_v = float(node_v['elevation'])
+                
+                if i == 0:
+                    elevations.append(elev_u)
+                elevations.append(elev_v)
+                
+                diff = elev_v - elev_u
+                total_elevation_change += abs(diff)
+                
                 if diff > 0:
                     total_ascent += diff
+                else:
+                    total_descent += abs(diff)
                 
-                # 경사도 수집
+                # 경사도 수집 (MultiGraph의 경우 {0: {attrs}} 형식)
                 edge_data = G.get_edge_data(u, v)
-                if isinstance(edge_data, dict) and 'grade' in edge_data:
-                    grades.append(abs(edge_data['grade']))
+                if edge_data is not None:
+                    # MultiGraph: {0: {'grade': 0.02, ...}} 형식
+                    if isinstance(edge_data, dict) and 'grade' not in edge_data:
+                        first_key = next(iter(edge_data), None)
+                        if first_key is not None and isinstance(edge_data[first_key], dict):
+                            edge_data = edge_data[first_key]
+                    if isinstance(edge_data, dict) and 'grade' in edge_data:
+                        grades.append(abs(float(edge_data['grade'])))
         
         avg_grade = (sum(grades) / len(grades)) * 100 if grades else 0
+        if avg_grade > 99.99: avg_grade = 99.99
+        
+        max_grade = max(grades) * 100 if grades else 0
+        if max_grade > 99.99: max_grade = 99.99
+        
+        max_elev_diff = (max(elevations) - min(elevations)) if elevations else 0
+        
+        logger.info(f"📊 Elevation stats: ascent={total_ascent:.1f}m, descent={total_descent:.1f}m, avg_grade={avg_grade:.2f}%, max_grade={max_grade:.2f}%, max_elev_diff={max_elev_diff:.1f}m")
         
         return {
             "total_ascent": round(total_ascent, 2),
-            "average_grade": round(avg_grade, 2)
+            "total_descent": round(total_descent, 2),
+            "total_elevation_change": round(total_elevation_change, 2),
+            "average_grade": round(avg_grade, 2),
+            "max_grade": round(max_grade, 2),
+            "max_elevation_diff": round(max_elev_diff, 2)
         }
 
     def calculate_total_elevation_change(self, G: nx.Graph, path: List[int]) -> float:
@@ -416,8 +456,8 @@ class RoadNetworkFetcher:
             node_v = G.nodes[v]
             
             if 'elevation' in node_u and 'elevation' in node_v:
-                # 절대값을 씌워서 누적
-                elev_diff = abs(node_v['elevation'] - node_u['elevation'])
+                # float 변환 후 절대값을 씌워서 누적
+                elev_diff = abs(float(node_v['elevation']) - float(node_u['elevation']))
                 total_change += elev_diff
         
         return round(total_change, 2)

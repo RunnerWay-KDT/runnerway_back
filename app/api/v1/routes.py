@@ -630,7 +630,8 @@ def recommend_waypoints(
 )
 async def recommend_route(
     request: RouteRecommendRequest,
-    db: Session = Depends(get_db)  # DB 세션 주입
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # DB 저장 위해 인증 추가
 ):
     """
     AI 기반 경로 추천 엔드포인트
@@ -673,11 +674,11 @@ async def recommend_route(
         # Normal (Fat Burn): 10분/km (일반 조깅) → 60분에 6km
         # Challenge: 7분/km (빠른 달리기) → 60분에 8.5km
         if condition == "recovery":
-            pace_min_per_km = 15.0
+            pace_min_per_km = 15.0  # 4km/h -> 15 min/km
         elif condition == "challenge":
-            pace_min_per_km = 7.0
-        else:  # normal (지방연소)
-            pace_min_per_km = 10.0
+            pace_min_per_km = 6.0   # 10km/h -> 6 min/km (Previously 7.0)
+        else:  # normal (fat-burn)
+            pace_min_per_km = 10.0  # 6km/h -> 10 min/km
         
         # 목표 시간 vs 목표 거리 우선순위
         if request.target_time_min and request.target_time_min > 0:
@@ -721,10 +722,10 @@ async def recommend_route(
         )
         
         # ----------------------------
-        # 경사도 로직 추가 (비동기 연동)
+        # 경사도 로직 추가
         # ----------------------------
-        # 1. 고도 추가 (비동기 병렬 호출)
-        await fetcher.add_elevation_to_nodes_async(G, db=db)
+        # 1. 고도 추가 (SRTM 로컬 데이터)
+        await asyncio.to_thread(fetcher.add_elevation_to_nodes, G)
         # 2. 경사도 및 가중치 계산
         fetcher.calculate_edge_grades_and_weights(G)
         
@@ -843,7 +844,7 @@ async def recommend_route(
                     
                     path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
                     stats = fetcher.get_elevation_stats(G, full_route)
-                    total_elev_change = fetcher.calculate_total_elevation_change(G, full_route)
+                    # total_elev_change = fetcher.calculate_total_elevation_change(G, full_route) -> stats에 포함됨
                     
                     # 자기 교차 검증
                     if has_self_intersection(path_coords):
@@ -856,7 +857,7 @@ async def recommend_route(
                         'coords': path_coords,
                         'distance_km': real_distance_km,
                         'time': est_time_min,
-                        'elevation_change': total_elev_change,
+                        'elevation_change': stats.get('total_elevation_change', 0),
                         'stats': stats,
                     }
                     break  # 성공
@@ -888,6 +889,101 @@ async def recommend_route(
         raise ExternalAPIException(
             "경로를 생성할 수 없습니다. 해당 위치에서 적절한 도로 네트워크를 찾을 수 없습니다."
         )
+    
+    # ============================================
+    # DB 저장 로직 추가 (사용자 요청)
+    # ============================================
+    try:
+        # 1. 상위 Route 객체 생성
+        # 추천 경로는 type='recommendation'으로 구분하거나, 기존 'preset'/'custom'과 다른 방식으로 처리
+        # 여기서는 type='recommendation'으로 저장 (User 모델 등 다른 곳과 호환성 확인 필요)
+        # 만약 type이 enum이면 schema 확인 필요. 현재는 String.
+        new_route = Route(
+            user_id=current_user.id,
+            name=f"추천 경로 ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+            type="recommendation",  # 추천 경로 타입
+            mode="running",         # 러닝 모드 고정
+            start_latitude=user_location[0],
+            start_longitude=user_location[1],
+            condition=condition,
+            safety_mode=False,      # 기본값
+            status="active"
+        )
+        db.add(new_route)
+        db.flush()  # ID 생성을 위해 flush
+        
+        # 2. RouteOption 객체 생성 및 저장
+        for candidate in candidates:
+            # candidate 구조: 
+            # {
+            #   "id": 1, "name": "...", "distance": "3.5km", "time": 20, 
+            #   "path": [...], "elevation_stats": {...}, ...
+            # }
+            
+            # 거리 문자열 "3.5km" -> float 3.5 변환
+            dist_str = candidate["distance"].replace("km", "").strip()
+            try:
+                dist_val = float(dist_str)
+            except:
+                dist_val = 0.0
+                
+            # 페이스 문자열 생성 (분:초/km)
+            # 여기서는 단순 계산값 사용 (condition 기반)
+            pace_sec = int(pace_min_per_km * 60)
+            pace_min = pace_sec // 60
+            pace_sec_rem = pace_sec % 60
+            pace_str = f"{int(pace_min)}:{int(pace_sec_rem):02d}"
+            
+            # 매핑 정의
+            condition_map = {
+                "recovery": "회복러닝", 
+                "fat-burn": "지방연소", 
+                "challenge": "기록 도전"
+            }
+            difficulty_map = {
+                "평지 경로": "쉬움",
+                "균형 경로": "보통", 
+                "업다운 경로": "도전"
+            }
+            
+            # 고도 데이터 추출
+            stats = candidate.get("elevation_stats", {})
+            
+            option = RouteOption(
+                route_id=new_route.id,
+                option_number=candidate["id"],
+                name=candidate["name"],
+                distance=dist_val,
+                estimated_time=candidate["time"],
+                recommended_pace=pace_str,
+                condition_type=condition_map.get(condition, condition),
+                difficulty=difficulty_map.get(candidate["name"], "보통"),
+                coordinates=candidate["path"],
+                
+                # 고도 데이터 매핑 (핵심 요청 사항)
+                max_elevation_diff=int(stats.get("max_elevation_diff", 0)),
+                total_ascent=stats.get("total_ascent", 0.0),
+                total_descent=stats.get("total_descent", 0.0),
+                total_elevation_change=stats.get("total_elevation_change", 0.0),
+                average_grade=stats.get("average_grade", 0.0),
+                max_grade=stats.get("max_grade", 0.0),
+                
+                # 기타
+                safety_score=0,
+                lighting_score=0
+            )
+            db.add(option)
+            
+        db.commit()
+        logger.info(f"Successfully saved recommended route {new_route.id} and {len(candidates)} options.")
+        
+    except Exception as e:
+        logger.error(f"Failed to save recommended route to DB: {e}", exc_info=True)
+        # DB 저장이 실패해도 추천 결과는 반환하는 것이 사용자 경험상 좋음
+        # 단, 트랜잭션 롤백 필요
+        db.rollback()
+        # 에러를 무시하고 진행할지, 아니면 사용자에게 알릴지 결정.
+        # 여기서는 로그만 남기고 결과는 반환.
         
     return {"candidates": candidates}
 
@@ -927,34 +1023,26 @@ async def prefetch_elevation(
 
 
 async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Session = None):
-    """백그라운드에서 실행되는 실제 수집 로직"""
+    """백그라운드에서 실행되는 고도 프리페치 (SRTM은 자동 캐싱하므로 네트워크만 미리 로드)"""
     from app.services.road_network import RoadNetworkFetcher
-    from app.db.database import SessionLocal  # 새로운 세션 생성용
     import asyncio
-    
-    # 백그라운드 작업은 별도의 DB 세션을 사용하는 것이 안전함
-    # 의존성 주입된 db가 이미 닫혔을 수 있기 때문
-    local_db = SessionLocal()
     
     try:
         fetcher = RoadNetworkFetcher()
-        # 1. 주변 도로 네트워크 가져오기
+        # 1. 주변 도로 네트워크 가져오기 (캐시됨)
         G = await asyncio.to_thread(
             fetcher.fetch_pedestrian_network_from_point,
             center_point=(lat, lng),
             distance=radius
         )
         
-        # 2. 고도 수집 및 DB 저장 호출
-        # 독립 세션(local_db) 전달
-        await fetcher.add_elevation_to_nodes_async(G, db=local_db)
+        # 2. SRTM 고도 데이터 로드 (첫 조회 시 타일 다운로드됨)
+        await asyncio.to_thread(fetcher.add_elevation_to_nodes, G)
         
         logger.info(f"Background prefetch completed for ({lat}, {lng})")
         
     except Exception as e:
         logger.error(f"Error during background elevation prefetch: {e}")
-        # 사용 완료한 세션 닫기
-        local_db.close()
 
 
 # ============================================
