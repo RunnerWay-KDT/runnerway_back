@@ -16,10 +16,10 @@ LatLng = Dict[str, float]  # {"lat": .., "lng": ..}
 LonLat = Tuple[float, float]  # (lon, lat)
 
 DEFAULT_CCTV_CSV = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "Seoul_CCTV.csv")
+    os.path.join(os.path.dirname(__file__), "..", "data", "Gangnam_CCTV.csv")
 )
 DEFAULT_LAMP_CSV = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "Seoul_Lamp.csv")
+    os.path.join(os.path.dirname(__file__), "..", "data", "Gangnam_Lamp.csv")
 )
 
 
