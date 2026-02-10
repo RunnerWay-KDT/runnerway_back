@@ -148,6 +148,7 @@ class WorkoutCompleteResponseWrapper(BaseModel):
 class WorkoutSummarySchema(BaseModel):
     """운동 기록 요약 스키마 (목록 조회용)"""
     id: str
+    route_id: Optional[str] = None
     route_name: str
     type: Optional[str] = None
     mode: Optional[str] = None
@@ -156,6 +157,7 @@ class WorkoutSummarySchema(BaseModel):
     avg_pace: Optional[str] = None
     calories: Optional[int] = None
     route_completion: Optional[float] = None
+    is_bookmarked: bool = False
     started_at: datetime
     completed_at: Optional[datetime] = None
     

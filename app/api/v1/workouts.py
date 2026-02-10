@@ -233,6 +233,30 @@ def cancel_workout(
 
 
 # ============================================
+# 운동 기록 삭제
+# ============================================
+@router.delete(
+    "/{workout_id}/record",
+    response_model=CommonResponse,
+    summary="운동 기록 삭제",
+    description="완료된 운동 기록을 삭제합니다. 사용자 통계도 함께 차감됩니다."
+)
+def delete_workout_record(
+    workout_id: str = Path(..., description="운동 UUID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """운동 기록 삭제 엔드포인트"""
+    service = WorkoutService(db)
+    service.delete_workout(workout_id, current_user.id)
+    
+    return CommonResponse(
+        success=True,
+        message="운동 기록이 삭제되었습니다"
+    )
+
+
+# ============================================
 # 운동 상세 조회
 # ============================================
 @router.get(

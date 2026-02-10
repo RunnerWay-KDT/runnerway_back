@@ -413,7 +413,7 @@ def get_route_detail(
     description="경로를 저장(북마크)합니다."
 )
 def save_route(
-    route_id: int = Path(..., description="경로 ID"),
+    route_id: str = Path(..., description="경로 ID"),
     request: RouteSaveRequest = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -467,7 +467,7 @@ def save_route(
     description="저장한 경로를 삭제합니다."
 )
 def unsave_route(
-    route_id: int = Path(..., description="경로 ID"),
+    route_id: str = Path(..., description="경로 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):

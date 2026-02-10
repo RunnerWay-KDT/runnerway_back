@@ -239,6 +239,24 @@ class WorkoutService:
         return True
     
     
+    def delete_workout(self, workout_id: str, user_id: str) -> bool:
+        """
+        운동 기록 삭제 (Soft Delete)
+        완료된 운동 기록도 삭제할 수 있습니다.
+        삭제 시 사용자 통계(user_stats)도 차감합니다.
+        """
+        workout = self._get_workout(workout_id, user_id)
+        
+        # 완료된 운동이면 통계 차감
+        if workout.status == "completed":
+            self._revert_user_stats(user_id, workout)
+        
+        workout.deleted_at = datetime.utcnow()
+        self.db.commit()
+        
+        return True
+    
+    
     # ============================================
     # 운동 기록 조회
     # ============================================
@@ -270,6 +288,8 @@ class WorkoutService:
             query = query.order_by(Workout.distance.desc())
         elif sort == "calories_desc":
             query = query.order_by(Workout.calories.desc())
+        elif sort == "date_asc":
+            query = query.order_by(Workout.completed_at.asc())
         else:
             query = query.order_by(Workout.completed_at.desc())
         
@@ -372,3 +392,15 @@ class WorkoutService:
                 completed_routes=1 if workout.status == "completed" else 0
             )
             self.db.add(stats)
+    
+    
+    def _revert_user_stats(self, user_id: str, workout: Workout):
+        """운동 기록 삭제 시 사용자 통계 차감 (user_stats 테이블)"""
+        stats = self.db.query(UserStats).filter(
+            UserStats.user_id == user_id
+        ).first()
+        
+        if stats:
+            stats.total_distance = max(0, float(stats.total_distance or 0) - (float(workout.distance) if workout.distance else 0))
+            stats.total_workouts = max(0, (stats.total_workouts or 0) - 1)
+            stats.completed_routes = max(0, (stats.completed_routes or 0) - 1)

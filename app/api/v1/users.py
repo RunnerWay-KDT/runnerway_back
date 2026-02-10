@@ -260,6 +260,8 @@ def get_my_workouts(
         query = query.order_by(Workout.distance.desc())
     elif sort == "calories_desc":
         query = query.order_by(Workout.calories.desc())
+    elif sort == "date_asc":
+        query = query.order_by(Workout.completed_at.asc())
     else:  # date_desc (기본값)
         query = query.order_by(Workout.completed_at.desc())
     
@@ -271,10 +273,21 @@ def get_my_workouts(
     workouts = query.offset(offset).limit(limit).all()
     
     # 응답 데이터 변환
+    # 북마크 여부를 한 번에 조회 (N+1 방지)
+    workout_route_ids = [w.route_id for w in workouts if w.route_id]
+    bookmarked_route_ids = set()
+    if workout_route_ids:
+        bookmarked = db.query(SavedRoute.route_id).filter(
+            SavedRoute.user_id == current_user.id,
+            SavedRoute.route_id.in_(workout_route_ids)
+        ).all()
+        bookmarked_route_ids = {r.route_id for r in bookmarked}
+    
     workout_list = []
     for workout in workouts:
         workout_list.append(WorkoutSummarySchema(
             id=workout.id,
+            route_id=workout.route_id,
             route_name=workout.route_name,
             type=workout.type,
             mode=workout.mode,
@@ -283,6 +296,7 @@ def get_my_workouts(
             avg_pace=workout.avg_pace,
             calories=workout.calories,
             route_completion=float(workout.route_completion) if workout.route_completion else None,
+            is_bookmarked=workout.route_id in bookmarked_route_ids if workout.route_id else False,
             started_at=workout.started_at,
             completed_at=workout.completed_at
         ))
@@ -315,20 +329,35 @@ def get_my_workouts(
     summary="저장한 경로 조회",
     description="""
     북마크한 경로 목록을 조회합니다.
+    
+    **정렬 옵션:**
+    - date_desc: 최신 저장순 (기본)
+    - date_asc: 오래된 저장순
+    - distance_desc: 거리 먼 순
+    - safety_desc: 안전도 높은 순
     """
 )
 def get_my_saved_routes(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    sort: str = Query("date_desc", description="정렬: date_desc, date_asc, distance_desc, safety_desc"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """저장한 경로 조회 엔드포인트"""
+    from app.models.route import RouteShape
+    from app.models.user import User as UserModel
     
     # 기본 쿼리
     query = db.query(SavedRoute).filter(
         SavedRoute.user_id == current_user.id
-    ).order_by(SavedRoute.saved_at.desc())
+    )
+    
+    # 정렬
+    if sort == "date_asc":
+        query = query.order_by(SavedRoute.saved_at.asc())
+    else:
+        query = query.order_by(SavedRoute.saved_at.desc())
     
     # 전체 개수
     total_count = query.count()
@@ -342,14 +371,50 @@ def get_my_saved_routes(
     for saved_route in saved_routes:
         route = db.query(Route).filter(Route.id == saved_route.route_id).first()
         if route:
+            # shape 정보
+            shape_data = None
+            if route.shape_id:
+                shape = db.query(RouteShape).filter(RouteShape.id == route.shape_id).first()
+                if shape:
+                    shape_data = {
+                        "shape_id": shape.id,
+                        "shape_name": shape.name,
+                        "icon_name": shape.icon_name,
+                    }
+            
+            # 작성자 정보
+            author = db.query(UserModel).filter(UserModel.id == route.user_id).first()
+            author_data = {
+                "id": route.user_id,
+                "name": author.name if author else "알 수 없음",
+            }
+            
+            # 옵션에서 거리·안전도
+            distance = float(route.options[0].distance) if route.options else 0
+            safety_score = route.options[0].safety_score if route.options else 0
+            
             routes_list.append({
                 "id": saved_route.id,
                 "route_id": route.id,
                 "route_name": route.name,
-                "distance": float(route.options[0].distance) if route.options else 0,
-                "safety_score": route.options[0].safety_score if route.options else 0,
-                "saved_at": saved_route.saved_at
+                "type": route.type,
+                "mode": route.mode,
+                "distance": distance,
+                "safety_score": safety_score,
+                "shape": shape_data,
+                "author": author_data,
+                "location": {
+                    "latitude": float(route.start_latitude) if route.start_latitude else 0,
+                    "longitude": float(route.start_longitude) if route.start_longitude else 0,
+                },
+                "saved_at": saved_route.saved_at.isoformat() if saved_route.saved_at else None,
             })
+    
+    # distance / safety 정렬은 파이썬 쪽에서 처리 (DB 조인 복잡성 회피)
+    if sort == "distance_desc":
+        routes_list.sort(key=lambda r: r["distance"], reverse=True)
+    elif sort == "safety_desc":
+        routes_list.sort(key=lambda r: r["safety_score"], reverse=True)
     
     # 페이지네이션 정보
     total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
