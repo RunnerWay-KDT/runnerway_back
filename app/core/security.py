@@ -118,7 +118,7 @@ def create_access_token(
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(
-            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+            days=settings.ACCESS_TOKEN_EXPIRE_DAYS
         )
     
     # 토큰에 추가 정보 삽입
@@ -201,11 +201,12 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
     2. 만료 검증: exp 시간이 지나지 않았는지 확인
     """
     try:
-        # 토큰 디코딩 및 검증
+        # 토큰 디코딩 및 검증 (만료 검증 비활성화 - 영구 로그인 지원)
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"verify_exp": False}
         )
         return payload
     except JWTError as e:
