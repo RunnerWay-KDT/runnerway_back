@@ -21,7 +21,8 @@ from app.schemas.route import (
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
     RouteOptionSchema, RoutePointSchema, ShapeInfoSchema,
-    SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
+    SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper,
+    NearbyAmenitiesResponse, NearbyAmenitiesResponseWrapper, CoordinateSchema
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
@@ -434,6 +435,75 @@ def get_route_detail(
             created_at=route.created_at,
             updated_at=route.updated_at,
         )
+    )
+
+
+# ============================================
+# 현재 위치 주변 편의시설 조회
+# ============================================
+@router.get(
+    "/amenities/nearby",
+    response_model=NearbyAmenitiesResponseWrapper,
+    summary="현재 위치 주변 편의시설 조회",
+    description="""
+    현재 위치를 중심으로 반경 1km 내 편의시설을 조회합니다.
+    
+    **지원 카테고리:**
+    - 카페
+    - 편의점
+    - 화장실(선택)
+    
+    **정렬 기준:**
+    - 별점 높은 순 (리뷰 수 > 거리 순)
+    """
+)
+def get_nearby_amenities(
+    lat: float = Query(..., description="현재 위치 위도"),
+    lng: float = Query(..., description="현재 위치 경도"),
+    include_restrooms: bool = Query(False, description="화장실 포함 여부"),
+    radius_m: int = Query(1000, ge=100, le=5000, description="검색 반경 (미터)"),
+    limit: int = Query(3, ge=1, le=10, description="카테고리별 최대 개수"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """현재 위치 기준 주변 편의시설 조회 엔드포인트"""
+
+    place_service = PlaceService(db)
+    cafes = place_service.get_nearby_places_brief(
+        center_lat=lat,
+        center_lng=lng,
+        category="cafe",
+        radius_m=radius_m,
+        limit=limit,
+    )
+    convenience_stores = place_service.get_nearby_places_brief(
+        center_lat=lat,
+        center_lng=lng,
+        category="convenience",
+        radius_m=radius_m,
+        limit=limit,
+    )
+    restrooms = (
+        place_service.get_nearby_places_brief(
+            center_lat=lat,
+            center_lng=lng,
+            category="restroom",
+            radius_m=radius_m,
+            limit=limit,
+        )
+        if include_restrooms
+        else []
+    )
+
+    return NearbyAmenitiesResponseWrapper(
+        success=True,
+        data=NearbyAmenitiesResponse(
+            center=CoordinateSchema(lat=lat, lng=lng),
+            radius_m=radius_m,
+            cafes=cafes,
+            convenience_stores=convenience_stores,
+            restrooms=restrooms,
+        ),
     )
 
 

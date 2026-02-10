@@ -10,7 +10,7 @@ from typing import List
 from sqlalchemy.orm import Session
 
 from app.models.route import Place
-from app.schemas.route import PlaceSchema, CoordinateSchema
+from app.schemas.route import PlaceSchema, PlaceBriefSchema, CoordinateSchema
 
 
 def _haversine_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -108,4 +108,39 @@ class PlaceService:
                 )
             )
 
+        return results
+
+    def get_nearby_places_brief(
+        self,
+        center_lat: float,
+        center_lng: float,
+        category: str,
+        radius_m: int = 1000,
+        limit: int = 3,
+    ) -> List[PlaceBriefSchema]:
+        """
+        반경 내 장소를 조회하고 요약 형태로 반환합니다.
+        - 별점 높은 순
+        - {위도, 경도, 별점, 이름, 특징} 포맷
+        """
+        places = self.get_nearby_places(
+            center_lat=center_lat,
+            center_lng=center_lng,
+            category=category,
+            radius_m=radius_m,
+            limit=limit,
+        )
+
+        results: List[PlaceBriefSchema] = []
+        for place in places:
+            feature = place.address or place.icon or place.category
+            results.append(
+                PlaceBriefSchema(
+                    name=place.name,
+                    rating=place.rating,
+                    feature=feature,
+                    lat=place.location.lat,
+                    lng=place.location.lng,
+                )
+            )
         return results

@@ -242,6 +242,15 @@ class PlaceSchema(BaseModel):
     location: CoordinateSchema
 
 
+class PlaceBriefSchema(BaseModel):
+    """장소 요약 스키마 (현재 위치 기준 주변 편의시설)"""
+    name: str
+    rating: Optional[float] = None
+    feature: Optional[str] = None
+    lat: float
+    lng: float
+
+
 class PlaceCategorySchema(BaseModel):
     """장소 카테고리 스키마"""
     id: str  # cafe, convenience, park, photo
@@ -257,6 +266,15 @@ class AmenitiesSchema(BaseModel):
     convenience_stores: List[PlaceSchema] = []
     restrooms: List[PlaceSchema] = []
     water_fountains: List[PlaceSchema] = []
+
+
+class NearbyAmenitiesResponse(BaseModel):
+    """현재 위치 기준 주변 편의시설 응답 스키마"""
+    center: CoordinateSchema
+    radius_m: int
+    cafes: List[PlaceBriefSchema] = []
+    convenience_stores: List[PlaceBriefSchema] = []
+    restrooms: List[PlaceBriefSchema] = []
 
 
 # ============================================
@@ -336,3 +354,9 @@ class RouteDetailResponseWrapper(BaseModel):
     """경로 상세 응답 래퍼"""
     success: bool = True
     data: RouteDetailResponse
+
+
+class NearbyAmenitiesResponseWrapper(BaseModel):
+    """현재 위치 주변 편의시설 응답 래퍼"""
+    success: bool = True
+    data: NearbyAmenitiesResponse
