@@ -265,9 +265,22 @@ class GPSArtRouter:
                             heuristic = self.C1_distance_minimization(N, start_pos)
                             frontier_b.put((new_cost + heuristic, neighbor))
 
-            # 두 탐색이 처음 만나는 노드에서 만나자마자 그 경로를 반환하고 끝냄(속도가 우선, 최단 거리는 보장 안됨)
+            # frontier_f/ frontier_b 에 (f, node) 튜플을 넣어서 항상 f(= g + C1) 기준 최소 힙으로 유지
             if best_path is not None:
-                return best_path
+                # 각 프런티어에서 아직 남아 있는 최소 f 값
+                if not frontier_f.empty():
+                    f_min_f = frontier_f.queue[0][0] # (f, node)
+                else:
+                    f_min_f = float('inf')
+
+                if not frontier_b.empty():
+                    f_min_b = frontier_b.queue[0][0]
+                else:
+                    f_min_b = float('inf')
+
+                # 양쪽 최소 f의 합이 best_cost 이상이면 더 좋은 경로는 나올 수 없음 -> 종료
+                if f_min_f + f_min_b >= best_cost:
+                    return best_path
 
         return best_path
 

@@ -1,7 +1,7 @@
 import osmnx as ox
 import networkx as nx
 import numpy as np
-from typing import Tuple, List, Optional, Dict
+from typing import Tuple, List, Optional, Dict, Any
 import logging
 from math import radians, cos, sin, asin, sqrt
 
@@ -58,6 +58,9 @@ class RoadNetworkFetcher:
 
             # 후처리: MultiDiGraph -> Graph 변환 및 pos 속성 추가
             G = self._postprocess_graph(G)
+
+            # degree-2 체인 압축으로 노드/엣지 수 줄이기
+            G = self._compress_degree_2_chains(G)
 
             logger.info(f"Built graph with {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
 
@@ -375,6 +378,55 @@ class RoadNetworkFetcher:
                 f"Large area detected ({area:.4f}°²)."
                 f"Query might timeout. Consider splitting the area."
             )
+
+    # degree=2인 중간 노드들을 제거하고, 양 끝 노드를 하나의 엣지로 연결.
+    # - 실제 도로 토폴로지는 유지하되, 노드/엣지 수만 줄인다.
+    # - 엣지 길이(length)는 합쳐서 저장한다.
+    def _compress_degree_2_chains(self, G: nx.Graph) -> nx.Graph:
+        G = G.copy()
+        removed = True
+
+        while removed:
+            removed = False
+            # 순회 중 그래프가 바뀌므로, 노드 리스트를 따로 뽑아둠
+            for node in list(G.nodes()):
+                # 교차로/끝점 등은 degree != 2이므로 건드리지 않음
+                if G.degree(node) != 2:
+                    continue
+
+                neighbors = list(G.neighbors(node))
+                if len(neighbors) != 2:
+                    continue
+
+                u, v = neighbors
+
+                # 이미 u-v 엣지가 있으면 패스
+                if G.has_edge(u, v):
+                    continue
+
+                data_u = G.get_edge_data(u, node, default={})
+                data_v = G.get_edge_data(node, v, default={})
+
+                len_u = data_u.get('length', 0.0) if isinstance(data_u, dict) else 0.0
+                len_v = data_v.get('length', 0.0) if isinstance(data_v, dict) else 0.0
+                new_length = len_u + len_v
+
+                # edge 속성 머지: dict 형태만 대상으로, 키가 문자열인 것만 모음
+                attrs: Dict[str, Any] = {}
+
+                for d in (data_u, data_v):
+                    if isinstance(d, dict):
+                        for key, val in d.items():
+                            if isinstance(key, str):
+                                attrs[key] = val
+
+                # pos 등 기타 속성은 u-v 중 어느 한쪽/합친 dict를 사용
+                attrs["length"] = new_length
+                G.add_edge(u, v, **attrs)
+                G.remove_node(node)
+                removed = True
+
+        return G
 
 # 구 위에 두 지점 사이의 최단 거리(대권 거리, Great-circle distance)를 구하는 공식 (미터 단위)
 def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> float:

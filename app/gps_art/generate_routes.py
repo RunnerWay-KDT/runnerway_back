@@ -139,7 +139,6 @@ def generate_routes(
           "validation": {...},                 # 거리 검증 등 (원하면 포함)
         }
     """
-
     # 보행자 도로 그래프 로드 (시작점 기준 target_distance의 1.5배 반경)
     fetcher = RoadNetworkFetcher(timeout=30)
     graph = fetcher.fetch_pedestrian_network_from_point(
