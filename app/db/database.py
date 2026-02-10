@@ -28,7 +28,7 @@ engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,      # 연결 상태 확인
     pool_recycle=3600,       # 1시간마다 연결 갱신
-    echo=settings.DEBUG      # 디버그 모드에서만 SQL 출력
+    echo=False               # SQL 로그 비활성화
 )
 
 

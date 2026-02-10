@@ -35,6 +35,9 @@ def update_task_progress(
     ).first()
     
     if task:
+        task.progress = progress
+        task.current_step = current_step
+        task.status = "processing"  # 진행 중으로 변경
         if estimated_remaining is not None:
             task.estimated_remaining = estimated_remaining
         db.commit()
@@ -94,30 +97,34 @@ async def generate_route_background(
             elif "challenge" in p or "기록" in p or "hard" in p:
                 condition = "challenge"
         
-        # 페이스 계산
+        # 페이스 계산 (routes.py와 동일)
+        # Recovery: 15분/km, Fat-burn: 10분/km, Challenge: 7분/km
         if condition == "recovery":
-            pace_min_per_km = 10.0
+            pace_min_per_km = 15.0
         elif condition == "challenge":
             pace_min_per_km = 7.0
         else:
-            pace_min_per_km = 9.0
+            pace_min_per_km = 10.0
         
         if target_time_min and target_time_min > 0:
             target_dist_km = target_time_min / pace_min_per_km
         else:
             target_dist_km = target_distance_km or 3.0
         
+        # 최대 거리 제한 (10km)
+        if target_dist_km > 10.0:
+            target_dist_km = 10.0
         
         # 10% - 도로 네트워크 가져오기
         update_task_progress(db, task_id, 10, "도로 데이터 가져오는 중...", 25)
         
-        # routes.py와 동일한 반경 계산 로직 적용 (3000m 제한 해제)
-        radius_meter = (target_dist_km / 2) * 1000 * 1.1
-        if radius_meter < 1500: 
-            radius_meter = 1500
-        if radius_meter > 8000:
-            logger.warning(f"Capping radius at 8000m (target: {target_dist_km:.1f}km)")
-            radius_meter = 8000
+        # routes.py와 동일한 반경 계산 로직 적용 (2500m 제한)
+        radius_meter = (target_dist_km / 2) * 1000 * 0.7
+        if radius_meter < 1000: 
+            radius_meter = 1000
+        if radius_meter > 2500:
+            logger.warning(f"Capping radius at 2500m (target: {target_dist_km:.1f}km)")
+            radius_meter = 2500
             
         print(f"🛣️ Fetching road network for Task {task_id} (radius: {radius_meter}m)...")
         
@@ -141,101 +148,90 @@ async def generate_route_background(
         print(f"📐 Calculating grades for Task {task_id}...")
         await asyncio.to_thread(fetcher.calculate_edge_grades_and_weights, G)
         
-        # 50% - 경로 생성
+        # 50% - 경로 생성 (각각 다른 가중치로 3개 직접 생성)
         update_task_progress(db, task_id, 50, "경로 계산 중...", 15)
-        print(f"🔄 Generating candidates for Task {task_id}...")
+        print(f"🔄 Generating 3 routes with different weights for Task {task_id}...")
         
-        candidate_routes = []
-        num_candidates = 6
+        # 3개 경로를 각각 다른 가중치로 생성하여 성격이 다른 경로 제공
+        route_configs = [
+            {"name": "평지 경로",   "weight": "weight_easy", "tag": None},
+            {"name": "균형 경로",   "weight": "length",      "tag": "BEST"},
+            {"name": "업다운 경로", "weight": "weight_hard",  "tag": None},
+        ]
         
-        logger.info(f"Task {task_id}: Generating {num_candidates} candidates...")
+        start_node = fetcher.get_nearest_node(G, (lat, lng))
+        generated_routes = []
         
-        for i in range(num_candidates):
-            try:
-                start_node = fetcher.get_nearest_node(G, (lat, lng))
-                
-                # 난이도에 따른 가중치 키 선택
-                weight_key = 'length'
-                if condition == "recovery":
-                    weight_key = 'weight_easy'
-                elif condition == "challenge":
-                    weight_key = 'weight_hard'
-                
-                # 경로 탐색 알고리즘(Dijkstra/A*) 역시 CPU 집약적이므로 비동기 처리
-                full_route = await asyncio.to_thread(
-                    fetcher.generate_loop_route,
-                    G, start_node, target_dist_km,
-                    attempt_number=i,
-                    weight=weight_key
-                )
-                
-                if not full_route or len(full_route) < 2:
-                    logger.warning(f"Task {task_id}: Candidate {i+1} empty or too short.")
+        logger.info(f"Task {task_id}: Generating 3 routes with different weights...")
+        
+        for i, config in enumerate(route_configs):
+            route_data = None
+            
+            # 최대 2회 시도 (1차 실패 시 재시도 1회)
+            for attempt in range(2):
+                try:
+                    attempt_num = i if attempt == 0 else i + 10
+                    
+                    full_route = await asyncio.to_thread(
+                        fetcher.generate_loop_route,
+                        G, start_node, target_dist_km,
+                        attempt_number=attempt_num,
+                        weight=config["weight"]
+                    )
+                    
+                    if not full_route or len(full_route) < 2:
+                        logger.warning(f"Task {task_id}: {config['name']} (attempt {attempt+1}) empty or too short.")
+                        continue
+                    
+                    path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
+                    
+                    # 자기 교차 검증
+                    if has_self_intersection(path_coords):
+                        logger.warning(f"Task {task_id}: {config['name']} (attempt {attempt+1}) rejected (self-intersection).")
+                        if attempt == 0:
+                            continue  # 재시도
+                        # 2차 시도도 실패 시 그래도 사용 (fallback)
+                    
+                    real_distance_km = fetcher.calculate_path_distance(G, full_route) / 1000
+                    est_time_min = int(real_distance_km * pace_min_per_km)
+                    stats = fetcher.get_elevation_stats(G, full_route)
+                    total_elev_change = fetcher.calculate_total_elevation_change(G, full_route)
+                    
+                    route_data = {
+                        'id': i + 1,
+                        'name': config['name'],
+                        'tag': config['tag'],
+                        'route': full_route,
+                        'elevation_change': total_elev_change,
+                        'distance_km': real_distance_km,
+                        'time': est_time_min,
+                        'coords': path_coords,
+                        'stats': stats,
+                        'has_intersection': has_self_intersection(path_coords),
+                    }
+                    logger.info(f"Task {task_id}: {config['name']} generated ({real_distance_km:.2f}km, elev_change={total_elev_change:.1f}m)")
+                    break  # 성공 시 다음 경로로
+                    
+                except Exception as e:
+                    logger.error(f"Task {task_id}: {config['name']} (attempt {attempt+1}) failed: {e}", exc_info=True)
                     continue
-                
-                real_distance_km = fetcher.calculate_path_distance(G, full_route) / 1000
-                est_time_min = int(real_distance_km * pace_min_per_km)
-                path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
-                stats = fetcher.get_elevation_stats(G, full_route)
-                total_elev_change = fetcher.calculate_total_elevation_change(G, full_route)
-                
-                candidate_routes.append({
-                    'id': i + 1,
-                    'route': full_route,
-                    'elevation_change': total_elev_change,
-                    'distance_km': real_distance_km,
-                    'time': est_time_min,
-                    'coords': path_coords,
-                    'stats': stats
-                })
-                logger.info(f"Task {task_id}: Candidate {i+1} generated ({real_distance_km:.2f}km)")
-                
-                # 진행률 업데이트 (50-70%)
-                progress = 50 + int((i + 1) / num_candidates * 20)
-                update_task_progress(db, task_id, progress, f"경로 계산 중 ({i+1}/{num_candidates})...", 10)
-                
-            except Exception as e:
-                logger.error(f"Candidate {i+1} failed: {e}", exc_info=True)
-                continue
+            
+            if route_data:
+                generated_routes.append(route_data)
+            
+            # 진행률 업데이트 (50-70%)
+            progress = 50 + int((i + 1) / 3 * 20)
+            update_task_progress(db, task_id, progress, f"경로 계산 중 ({i+1}/3)...", 10)
         
-        logger.info(f"Task {task_id}: Total {len(candidate_routes)} candidates generated.")
-
-        # 70% - 자기 교차 필터링
-        update_task_progress(db, task_id, 70, "경로 검증 중...", 8)
+        logger.info(f"Task {task_id}: Total {len(generated_routes)} routes generated.")
         
-        valid_candidates = []
-        rejected_count = 0
+        if len(generated_routes) < 1:
+            logger.error(f"Task {task_id}: No routes generated at all.")
+            raise ValueError("유효한 경로를 생성할 수 없습니다 (No viable routes found)")
         
-        for route_data in candidate_routes:
-            if not has_self_intersection(route_data['coords']):
-                valid_candidates.append(route_data)
-            else:
-                logger.warning(f"Task {task_id}: Candidate {route_data['id']} rejected (self-intersection).")
-                rejected_count += 1
-        
-        if len(valid_candidates) < 1:
-            if len(candidate_routes) > 0:
-                 # 교차 검증 실패 시, fallback으로 가장 긴 경로 하나라도 선택
-                 logger.warning(f"Task {task_id}: All candidates rejected by intersection check. Using the first candidate as fallback.")
-                 valid_candidates.append(candidate_routes[0])
-            else:
-                 logger.error(f"Task {task_id}: No candidates generated at all.")
-                 raise ValueError("유효한 경로를 생성할 수 없습니다 (No viable routes found)")
-        
-        # 85% - 경로 정렬 및 선택
+        # 85% - DB 저장 준비
         update_task_progress(db, task_id, 85, "최적 경로 선택 중...", 5)
         
-        valid_candidates.sort(key=lambda x: x['elevation_change'])
-        
-        selected_count = min(3, len(valid_candidates))
-        if selected_count == 3:
-            selected_indices = [0, len(valid_candidates) // 2, len(valid_candidates) - 1]
-        elif selected_count == 2:
-            selected_indices = [0, len(valid_candidates) - 1]
-        else:
-            selected_indices = [0]
-        
-        route_names = ["평지 경로", "균형 경로", "업다운 경로"]
         
         # 90% - DB 저장 (선택적)
         update_task_progress(db, task_id, 90, "결과 저장 중...", 3)
@@ -255,19 +251,18 @@ async def generate_route_background(
         db.flush()
         
         # RouteOption 저장
-        for idx_position, route_idx in enumerate(selected_indices):
-            route_data = valid_candidates[route_idx]
+        for idx, route_data in enumerate(generated_routes):
             
             option = RouteOption(
                 route_id=route.id,
-                option_number=idx_position + 1,
-                name=route_names[idx_position],
+                option_number=idx + 1,
+                name=route_data['name'],
                 distance=route_data['distance_km'],
                 estimated_time=route_data['time'],
                 recommended_pace=format_pace_string(pace_min_per_km),
                 condition_type=condition,
-                difficulty=route_names[idx_position],
-                tag='BEST' if idx_position == 1 else None,
+                difficulty=route_data['name'],
+                tag=route_data['tag'],
                 coordinates=route_data['coords'],
                 safety_score=85,
                 total_ascent=route_data['stats']['total_ascent'],
@@ -275,7 +270,7 @@ async def generate_route_background(
                 total_elevation_change=route_data['elevation_change'],
                 average_grade=route_data['stats']['average_grade'],
                 max_grade=calculate_max_grade(G, route_data['route']),
-                has_self_intersection=False,
+                has_self_intersection=route_data.get('has_intersection', False),
                 validation_version='v1.0',
                 segment_count=len(route_data['coords']) - 1,
                 turn_count=calculate_turn_count(route_data['coords'])
@@ -295,8 +290,8 @@ async def generate_route_background(
             task.current_step = "완료!"
             task.estimated_remaining = 0
             task.route_id = route.id
-            task.total_candidates = len(candidate_routes)
-            task.filtered_by_intersection = rejected_count
+            task.total_candidates = len(generated_routes)
+            task.filtered_by_intersection = 0
             task.completed_at = datetime.utcnow()
             db.commit()
         

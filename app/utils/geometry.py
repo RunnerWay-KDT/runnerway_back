@@ -170,3 +170,25 @@ def calculate_path_bbox(path_coords: List[Dict[str, float]]) -> Dict[str, float]
         "min_lng": min(lngs),
         "max_lng": max(lngs)
     }
+
+
+def calculate_path_area(path_coords: List[Dict[str, float]]) -> float:
+    """
+    경로의 Bounding Box 면적을 계산합니다.
+    넓게 퍼진 경로일수록 높은 값을 가집니다.
+    
+    Args:
+        path_coords: 경로 좌표 리스트
+    
+    Returns:
+        float: Bounding Box 면적 (위도차 * 경도차, 대략적인 상대값)
+    """
+    if not path_coords or len(path_coords) < 2:
+        return 0.0
+    
+    bbox = calculate_path_bbox(path_coords)
+    lat_range = bbox["max_lat"] - bbox["min_lat"]
+    lng_range = bbox["max_lng"] - bbox["min_lng"]
+    
+    # 면적 반환 (km^2 근사값이 아닌 상대적 비교용)
+    return lat_range * lng_range * 10000  # 스케일 조정

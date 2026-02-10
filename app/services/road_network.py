@@ -61,9 +61,9 @@ class RoadNetworkFetcher:
         # 캐시 확인
         if os.path.exists(cache_file):
             try:
-                logger.info(f"✅ Using cached network: {cache_key}")
+                # logger.info(f"✅ Using cached network: {cache_key}")
                 G = ox.load_graphml(cache_file)
-                logger.info(f"Loaded cached graph with {G.number_of_nodes()} nodes")
+                # logger.info(f"Loaded cached graph with {G.number_of_nodes()} nodes")
                 return G
             except Exception as e:
                 logger.warning(f"Failed to load cache: {e}. Fetching from OSM...")
@@ -72,7 +72,7 @@ class RoadNetworkFetcher:
 
         try:
             # OSMnx로 도로 네트워크 가져오기 (반올림된 좌표 사용)
-            logger.info(f"Fetching network from OSM for ({lat_rounded}, {lon_rounded}) with distance {distance}m")
+            # logger.info(f"Fetching network from OSM for ({lat_rounded}, {lon_rounded}) with distance {distance}m")
             G = ox.graph_from_point(
                 center_point=(lat_rounded, lon_rounded),  # 반올림된 좌표 사용
                 dist=distance,
@@ -92,7 +92,7 @@ class RoadNetworkFetcher:
             # 캐시 저장
             try:
                 ox.save_graphml(G, cache_file)
-                logger.info(f"Saved network to cache: {cache_file}")
+                # logger.info(f"Saved network to cache: {cache_file}")
             except Exception as e:
                 logger.warning(f"Failed to save cache: {e}")
 
@@ -124,7 +124,7 @@ class RoadNetworkFetcher:
 
         south, west, north, east = bbox
         
-        logger.info(f"Fetching {network_type} network from bbox: {bbox}")
+        # logger.info(f"Fetching {network_type} network from bbox: {bbox}")
 
         try:
             # OSMnx로 도로 네트워크 가져오기
@@ -193,7 +193,7 @@ class RoadNetworkFetcher:
         노드에 고도(elevation) 데이터를 비동기로 추가합니다 (캐시 우선).
         """
         if db:
-            logger.info("Using ElevationService with DB Cache...")
+            # logger.info("Using ElevationService with DB Cache...")
             from app.services.elevation_service import ElevationService
             
             # Context Manager 패턴으로 리소스 자동 관리
@@ -210,9 +210,9 @@ class RoadNetworkFetcher:
                     lat, lon = G.nodes[node]['y'], G.nodes[node]['x']
                     G.nodes[node]['elevation'] = elevations.get((lat, lon), 20.0)
                     
-            logger.info(f"Elevation update completed using cache/API.")
+            # logger.info(f"Elevation update completed using cache/API.")
         else:
-            logger.info("No DB session provided. Using simulated elevation data.")
+            # logger.info("No DB session provided. Using simulated elevation data.")
             self._add_simulated_elevation(G)
         return G
 

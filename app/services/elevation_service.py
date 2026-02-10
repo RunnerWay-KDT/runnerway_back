@@ -1,6 +1,6 @@
 from typing import List, Tuple, Dict, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, tuple_
 from app.models.elevation import ElevationCache
 from app.core.exceptions import ExternalAPIException
 import httpx
@@ -16,8 +16,23 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# SRTM 데이터 (모듈 레벨에서 1회만 초기화, 이후 재사용)
+_srtm_data = None
+
+def _get_srtm_data():
+    """SRTM 데이터를 싱글턴으로 로드"""
+    global _srtm_data
+    if _srtm_data is None:
+        try:
+            import srtm
+            _srtm_data = srtm.get_data()
+            logger.info("✅ SRTM 데이터 초기화 완료")
+        except Exception as e:
+            logger.warning(f"⚠️ SRTM 초기화 실패: {e}. Open-Meteo fallback 사용.")
+    return _srtm_data
+
 class ElevationService:
-    """고도 데이터 조회 서비스 (캐시 우선)"""
+    """고도 데이터 조회 서비스 (SRTM 우선 → 캐시 → API fallback)"""
     
     # 서울시 경계 (안전 여유 포함)
     SEOUL_BOUNDS = {
@@ -28,27 +43,23 @@ class ElevationService:
     }
     
     # 캐시 검색 허용 오차 (약 11m)
-    # DECIMAL(9,7) 정밀도이므로 소수점 4자리까지 비교
     CACHE_TOLERANCE = 0.0001
     
     def __init__(self, db: Session):
         self.db = db
         self._client = None
-        self.dem_service = None
-        
-        # DEM 서비스 초기화 시도
-        try:
-            from app.config import settings
-            from app.services.dem_elevation_service import DEMElevationService
-            
-            dem_path = settings.DEM_FILE_PATH
-            if os.path.exists(dem_path):
-                self.dem_service = DEMElevationService(dem_path)
-                logger.info(f"✅ DEM service initialized: {dem_path}")
-            else:
-                logger.info(f"ℹ️ DEM file not found: {dem_path}. Using Open-Meteo only.")
-        except Exception as e:
-            logger.warning(f"⚠️ DEM initialization failed: {e}. Fallback to Open-Meteo.")
+        self._srtm = _get_srtm_data()
+    
+    def _get_srtm_elevation(self, lat: float, lon: float) -> Optional[float]:
+        """SRTM에서 고도 조회 (로컬 데이터)"""
+        if self._srtm is not None:
+            try:
+                elev = self._srtm.get_elevation(lat, lon)
+                if elev is not None:
+                    return float(elev)
+            except Exception:
+                pass
+        return None
     
     async def __aenter__(self):
         """Context Manager 진입: AsyncClient 생성"""
@@ -81,13 +92,12 @@ class ElevationService:
         )
     
     async def get_elevation(self, lat: float, lon: float) -> float:
-        """단일 좌표 고도 조회 (DEM → 캐시 → API 순서)"""
+        """단일 좌표 고도 조회 (SRTM → 캐시 → API 순서)"""
         
-        # 1. DEM 우선 조회
-        if self.dem_service and self.dem_service.is_in_coverage(lat, lon):
-            dem_elev = self.dem_service.get_elevation(lat, lon)
-            if dem_elev is not None:
-                return dem_elev
+        # 1. SRTM 우선 조회 (로컬, 가장 빠름)
+        srtm_elev = self._get_srtm_elevation(lat, lon)
+        if srtm_elev is not None:
+            return srtm_elev
         
         # 2. 서울시 범위 체크
         if not self.is_in_seoul(lat, lon):
@@ -120,34 +130,28 @@ class ElevationService:
             
         results = {}
         
-        # 1. DEM 우선 조회 (커버리지 내 좌표)
-        dem_results = {}
+        # 1. SRTM 우선 조회 (로컬 데이터, 가장 빠름)
+        srtm_results = {}
         remaining_coords = []
         
-        if self.dem_service:
-            for lat, lon in coordinates:
-                if self.dem_service.is_in_coverage(lat, lon):
-                    dem_elev = self.dem_service.get_elevation(lat, lon)
-                    if dem_elev is not None:
-                        dem_results[(lat, lon)] = dem_elev
-                    else:
-                        remaining_coords.append((lat, lon))
-                else:
-                    remaining_coords.append((lat, lon))
-            
-            if dem_results:
-                logger.info(f"📍 DEM hits: {len(dem_results)}/{len(coordinates)} coordinates")
-        else:
-            remaining_coords = coordinates
+        for lat, lon in coordinates:
+            srtm_elev = self._get_srtm_elevation(lat, lon)
+            if srtm_elev is not None:
+                srtm_results[(lat, lon)] = srtm_elev
+            else:
+                remaining_coords.append((lat, lon))
         
-        # 결과에 DEM 데이터 추가
-        results.update(dem_results)
+        if srtm_results:
+            logger.info(f"📍 SRTM 조회: {len(srtm_results)}/{len(coordinates)}개 성공")
         
-        # DEM에서 못 찾은 좌표만 계속 처리
+        # 결과에 SRTM 데이터 추가
+        results.update(srtm_results)
+        
+        # SRTM에서 못 찾은 좌표만 계속 처리
         if not remaining_coords:
             return results
         
-        coordinates = remaining_coords  # 이하 로직은 남은 좌표만 처리
+        coordinates = remaining_coords
         
         # 2. 그리딩 (좌표 정규화 및 중복 제거)
         grid_map = {} 
@@ -244,7 +248,7 @@ class ElevationService:
             # 📊 캐시 히트율 로깅
             total_requests = len(seoul_grids)
             hit_rate = (hit_count_log / total_requests * 100) if total_requests > 0 else 0
-            logger.info(f"📊 Nearest Cache Hit Rate: {hit_rate:.1f}% ({hit_count_log}/{total_requests} hits, {len(cache_misses)} misses)")
+            # logger.info(f"📊 Nearest Cache Hit Rate: {hit_rate:.1f}% ({hit_count_log}/{total_requests} hits, {len(cache_misses)} misses)")
             
         else:
             cache_hits = {}
@@ -267,24 +271,24 @@ class ElevationService:
                 
         # 4. 캐시 미스 분량 API 호출 (재활성화)
         if cache_misses:
-            logger.info(f"📡 Fetching {len(cache_misses)} missing points from Open-Meteo API...")
+            # logger.info(f"📡 Fetching {len(cache_misses)} missing points from Open-Meteo API...")
             
             try:
-                # 배치 크기 제한 (100개씩)
-                batch_size = 100
+                # 배치 크기 제한 (500개씩) - Open-Meteo는 대량 요청 지원
+                batch_size = 500
                 api_results = []
                 
                 for i in range(0, len(cache_misses), batch_size):
                     batch = cache_misses[i:i+batch_size]
-                    logger.info(f"  Batch {i//batch_size + 1}/{(len(cache_misses)-1)//batch_size + 1}: {len(batch)} points")
+                    # logger.info(f"  Batch {i//batch_size + 1}/{(len(cache_misses)-1)//batch_size + 1}: {len(batch)} points")
                     
                     try:
                         elevations = await self._fetch_batch_from_api(batch)
                         api_results.extend(zip(batch, elevations))
                         
-                        # Rate limit 방지: 배치 간 대기 (200ms)
+                        # Rate limit 방지: 배치 간 대기 (0.05s) - 배치 사이즈 늘려서 호출 횟수 감소
                         if i + batch_size < len(cache_misses):
-                            await asyncio.sleep(0.2)
+                            await asyncio.sleep(0.05)
                     except Exception as e:
                         logger.warning(f"  Batch failed: {e}, skipping...")
                         continue
@@ -302,7 +306,7 @@ class ElevationService:
                     cache_items = [(lat, lon, elev) for (lat, lon), elev in api_results]
                     self._save_batch_to_cache(cache_items)
                     
-                    logger.info(f"✅ Successfully fetched and cached {len(api_results)} new points")
+                    # logger.info(f"✅ Successfully fetched and cached {len(api_results)} new points")
                 
             except Exception as e:
                 logger.error(f"❌ API batch fetch failed: {e}")
@@ -362,7 +366,7 @@ class ElevationService:
 
     def _save_batch_to_cache(self, items: List[Tuple[float, float, float]]):
         """
-        대량 고도 데이터 캐시 저장 (Bulk Insert)
+        대량 고도 데이터 캐시 저장 (Bulk Insert) - 중복 방지 최적화
         Args:
             items: (lat, lon, elevation) 튜플 리스트
         """
@@ -373,60 +377,51 @@ class ElevationService:
         
         cache_db = SessionLocal()
         try:
-            new_entries = []
-            
-            # 1. 중복 확인을 위해 이미 존재하는 좌표 조회
-            # (데이터가 많을 경우 여기서도 성능 이슈가 있을 수 있으나, 
-            #  일단 INSERT 시 충돌 방지를 위해 체크하거나 ON CONFLICT DO NOTHING을 써야 함.
-            #  SQLAlchemy Core를 쓰지 않고 ORM Level에서 처리하려면 간단히 조회 후 없는 것만 추가)
-            
-            # 입력된 좌표들의 키 집합
-            input_keys = set((round(lat, 7), round(lon, 7)) for lat, lon, _ in items)
-            
-            # OR 조건을 동적으로 생성하기 어려우니, 단순화를 위해
-            # Loop check 대신, TRY-EXCEPT으로 개별 등록 혹은
-            # Postgres의 ON CONFLICT 기능을 쓰는게 좋지만, 
-            # 여기서는 DB 종속성을 최소화하고 로직 단순화를 위해 
-            # '없는 것만 추가'하는 로직을 Python 레벨에서 구현 (Batch Size가 작으므로 가능)
-
-            # 하지만 100개 정도면 그냥 bulk_save_objects를 시도하되, 
-            # 중복 에러가 나면 무시하는 방법도 있음.
-            # 가장 안전하고 범용적인 방법: 하나씩 확인하지 않고, 
-            # 캐시되지 않은 좌표만 필터링해서 Bulk Insert
-
-            # DB에 있는 해당 범위의 데이터 조회는 복잡하므로,
-            # 단순하게: 
-            # "방금 API에서 가져온 데이터는 DB에 없을 확률이 높음 (왜냐하면 아까 조회했을 때 없었으니까)"
-            # 단, 동시성 이슈로 그 사이에 누가 넣었을 수는 있음.
-            
-            # 안전하게 가기 위해:
-            # objects 생성
-            
-            objects = [
-                ElevationCache(
-                    latitude=round(lat, 7),
-                    longitude=round(lon, 7),
-                    elevation=round(elev, 2)
-                )
+            # 1. 입력된 좌표들의 키 집합 (반올림 처리)
+            # 딕셔너리로 만들어서 나중에 고도값도 쉽게 찾을 수 있게 함
+            input_map = {
+                (round(lat, 7), round(lon, 7)): round(elev, 2) 
                 for lat, lon, elev in items
-            ]
+            }
             
-            # bulk_save_objects 사용 (return_defaults=False로 속도 향상)
-            # 중복 키 에러 발생 시... 사실 이걸 막으려면 조회후 넣거나
-            # merge를 써야하는데 merge는 느림.
-            # 여기서는 API에서 가져온 'Miss' 데이터이므로, 기본적으로 DB에 없다고 가정하고 넣되
-            # 에러 발생 시(Unique Violation) 해당 배치는 개별 건으로 재시도하거나 포기(Log only).
+            if not input_map:
+                return
+
+            # 2. DB에서 이미 존재하는 좌표 조회 (Bulk 조회)
+            existing_records = cache_db.query(ElevationCache.latitude, ElevationCache.longitude).filter(
+                tuple_(ElevationCache.latitude, ElevationCache.longitude).in_(input_map.keys())
+            ).all()
             
-            cache_db.bulk_save_objects(objects)
-            cache_db.commit()
-            logger.info(f"✅ Bulk saved {len(objects)} elevation points to cache")
+            # 이미 존재하는 좌표 집합
+            existing_coords = set((float(r.latitude), float(r.longitude)) for r in existing_records)
+            
+            # 3. 존재하지 않는 새로운 데이터만 필터링
+            new_objects = []
+            for (lat, lon), elev in input_map.items():
+                # DB에서 가져온 값은 float 변환 필요 (Decimal 등으로 올 수 있음)
+                # 위에서 이미 float으로 변환해서 set에 넣었으므로 바로 비교 가능
+                # 단, 부동소수점 오차 고려하여 round 처리된 값끼리 비교
+                if (lat, lon) not in existing_coords:
+                    new_objects.append(
+                        ElevationCache(
+                            latitude=lat,
+                            longitude=lon,
+                            elevation=elev
+                        )
+                    )
+            
+            # 4. 정말로 새로운 데이터만 Bulk Insert
+            if new_objects:
+                cache_db.bulk_save_objects(new_objects)
+                cache_db.commit()
+                # logger.info(f"✅ Bulk saved {len(new_objects)} new elevation points to cache (skipped {len(items) - len(new_objects)} duplicates)")
+            else:
+                # logger.info(f"ℹ️ All {len(items)} points already exist in cache. Skipping save.")
+                pass
             
         except Exception as e:
             cache_db.rollback()
-            logger.warning(f"⚠️ Bulk save failed (possibly duplicate), retrying individually: {e}")
-            # 실패 시 개별 저장 시도 (Fallback)
-            for lat, lon, elev in items:
-                self._save_to_cache(lat, lon, elev)
+            logger.warning(f"⚠️ Bulk save failed: {e}")
         finally:
             cache_db.close()
     
