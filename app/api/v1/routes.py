@@ -20,11 +20,12 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema,
+    RouteOptionSchema, RoutePointSchema, ShapeInfoSchema,
     SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException
+from app.services.place_service import PlaceService
 from app.services.safety_score import (
     compute_safety_score,
     load_cctv_points,
@@ -337,6 +338,7 @@ def get_route_options(
 def get_route_detail(
     route_id: int = Path(..., description="경로 ID"),
     option_id: int = Path(..., description="옵션 ID"),
+    include_restrooms: bool = Query(False, description="화장실 포함 여부"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -366,28 +368,71 @@ def get_route_detail(
                 elevation=coord.get("elevation")
             ))
     
+    # 현재 위치(시작점)를 중심으로 1km 반경 내 편의시설 조회
+    center_lat = float(route.start_latitude)
+    center_lng = float(route.start_longitude)
+    place_service = PlaceService(db)
+    cafes = place_service.get_nearby_places(
+        center_lat=center_lat,
+        center_lng=center_lng,
+        category="cafe",
+        radius_m=1000,
+        limit=3,
+    )
+    convenience_stores = place_service.get_nearby_places(
+        center_lat=center_lat,
+        center_lng=center_lng,
+        category="convenience",
+        radius_m=1000,
+        limit=3,
+    )
+    restrooms = (
+        place_service.get_nearby_places(
+            center_lat=center_lat,
+            center_lng=center_lng,
+            category="restroom",
+            radius_m=1000,
+            limit=3,
+        )
+        if include_restrooms
+        else []
+    )
+
+    shape_info = None
+    if route.shape:
+        shape_info = ShapeInfoSchema(
+            id=str(route.shape.id),
+            name=route.shape.name,
+            icon_name=route.shape.icon_name,
+            category=route.shape.category,
+            is_custom=False,
+        )
+
     return RouteDetailResponseWrapper(
         success=True,
         data=RouteDetailResponse(
-            id=option.id,
-            route_id=route.id,
-            type=option.option_type,
-            name=route.name or f"{route.shape.name if route.shape else ''} 경로",
-            distance=float(option.distance),
-            estimated_time=option.estimated_time,
-            safety_score=option.safety_score,
-            elevation_gain=option.elevation_gain,
-            path=path_points,
-            safety_features={
-                "cctv_count": 0,  # TODO: 실제 데이터 조회
-                "streetlight_coverage": 0,
-                "emergency_points": []
-            },
+            id=str(route.id),
+            name=route.name,
+            type=route.type,
+            mode=route.mode,
+            start_latitude=float(route.start_latitude),
+            start_longitude=float(route.start_longitude),
+            custom_svg_url=route.svg_path,
+            condition=route.condition,
+            intensity=route.intensity,
+            target_duration=route.target_duration,
+            safety_mode=route.safety_mode,
+            status=route.status,
+            shape_info=shape_info,
+            options=[],
             amenities={
-                "restrooms": [],  # TODO: 주변 편의시설 조회
-                "water_fountains": [],
-                "convenience_stores": []
-            }
+                "cafes": cafes,
+                "convenience_stores": convenience_stores,
+                "restrooms": restrooms,
+                "water_fountains": []
+            },
+            created_at=route.created_at,
+            updated_at=route.updated_at,
         )
     )
 

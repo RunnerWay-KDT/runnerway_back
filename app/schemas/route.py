@@ -251,6 +251,14 @@ class PlaceCategorySchema(BaseModel):
     places: List[PlaceSchema]
 
 
+class AmenitiesSchema(BaseModel):
+    """주변 편의시설 스키마"""
+    cafes: List[PlaceSchema] = []
+    convenience_stores: List[PlaceSchema] = []
+    restrooms: List[PlaceSchema] = []
+    water_fountains: List[PlaceSchema] = []
+
+
 # ============================================
 # 저장된 경로 스키마
 # ============================================
@@ -319,6 +327,7 @@ class RouteDetailResponse(BaseModel):
     status: str
     shape_info: Optional[ShapeInfoSchema] = None
     options: List[RouteOptionSchema] = []
+    amenities: Optional[AmenitiesSchema] = None
     created_at: datetime
     updated_at: datetime
 
