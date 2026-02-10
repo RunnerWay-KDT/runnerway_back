@@ -405,50 +405,6 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
     # 호의 길이
     return c * r
 
-# 사용 예시
-if __name__ == "__main__":
-    fetcher = RoadNetworkFetcher(timeout=30)
-
-    # 방법 1: 출발지 중심으로 추출
-    start_point = (37.5007, 127.0369)  # 역삼역 (위도, 경도)
-    
-    # 네트워크 추출
-    graph = fetcher.fetch_pedestrian_network_from_point(
-        center_point=start_point,
-        distance=2000,  # 2km 반경
-        network_type='walk',
-        simplify=False
-    )
-    
-    print(f"네트워크: {graph.number_of_nodes()}개 노드, {graph.number_of_edges()}개 엣지")
-    
-    # 예시: 그림 좌표 (실제로는 사용자가 그린 그림에서 가져옴)
-    drawing_coords = [
-        (127.0369, 37.5007),  # 출발지
-        (127.0370, 37.5010),
-        (127.0375, 37.5015),
-        (127.0380, 37.5020),
-        (127.0369, 37.5007),  # 다시 출발지로
-    ]
-    
-    # 최소 거리 계산
-    min_distance = fetcher.calculate_drawing_minimum_distance(drawing_coords)
-    print(f"\n그림의 최소 거리: {min_distance/1000:.2f}km")
-    
-    # 사용자가 입력한 목표 거리
-    target_distance = 5000  # 5km
-    
-    # 거리 검증
-    validation = fetcher.validate_target_distance(min_distance, target_distance)
-    
-    print(f"\n검증 결과:")
-    print(validation["message"])
-    
-    if not validation["is_valid"]:
-        print("\n옵션:")
-        for i, option in enumerate(validation["options"], 1):
-            print(f"  {i}. {option}")
-
 def haversine_matrix_meters(
     lon1: np.ndarray, lat1: np.ndarray,
     lon2: np.ndarray, lat2: np.ndarray,
