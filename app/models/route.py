@@ -130,7 +130,15 @@ class RouteOption(Base):
     
     # ========== 점수/특성 ==========
     safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
-    max_elevation_diff = Column(Integer, default=0, comment='고도차 (m)')
+    safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
+    
+    # 고도 통계
+    max_elevation_diff = Column(Integer, default=0, comment='최대 고도차 (최고점-최저점, m)')
+    total_ascent = Column(DECIMAL(6, 2), default=0, comment='총 상승 고도 (m)')
+    total_descent = Column(DECIMAL(6, 2), default=0, comment='총 하강 고도 (m)')
+    total_elevation_change = Column(DECIMAL(6, 2), default=0, comment='총 고도 변화량 (m)')
+    average_grade = Column(DECIMAL(4, 2), default=0, comment='평균 경사도 (%)')
+    max_grade = Column(DECIMAL(4, 2), default=0, comment='최대 경사도 (%)')
     lighting_score = Column(Integer, default=0, comment='조명 점수 (0-100)')
     
     # 자기 교차 검증

@@ -4,17 +4,10 @@
 # 경로 생성, 옵션 조회, 저장/삭제 등 경로 관련 API를 제공합니다.
 # AI 기반 경로 생성 및 안전도 평가 기능을 포함합니다.
 # ============================================
-<<<<<<< HEAD
-
-from typing import Optional
-from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, HTTPException
-from sqlalchemy.orm import Session, joinedload
-=======
 from operator import ge
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, Body
-from sqlalchemy.orm import Session
->>>>>>> main
+from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, HTTPException, Body
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
@@ -29,14 +22,17 @@ from app.schemas.route import (
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
     RouteSaveRequest, RouteSaveResponse,
-<<<<<<< HEAD
     RouteSaveRequest, RouteSaveResponse,
-    RouteOptionSchema, RoutePointSchema,
+    RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
     RouteRecommendRequest, RouteRecommendResponse,
-    ElevationPrefetchRequest
+    ElevationPrefetchRequest,
+    SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
 from app.core.exceptions import NotFoundException, ValidationException, ExternalAPIException
+from app.gps_art.generate_routes import generate_routes
+from app.models.route import Route, RouteOption, RouteShape
+from app.services.gps_art_service import generate_gps_art_impl
 import osmnx as ox
 import networkx as nx
 import logging
@@ -51,17 +47,6 @@ logger = logging.getLogger(__name__)
 # OSMnx 설정
 ox.settings.use_cache = True
 ox.settings.log_console = False
-
-=======
-    RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
-    SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
-)
-from app.schemas.common import CommonResponse
-from app.core.exceptions import NotFoundException, ValidationException
-from app.gps_art.generate_routes import generate_routes
-from app.models.route import Route, RouteOption, RouteShape
-from app.services.gps_art_service import generate_gps_art_impl
->>>>>>> main
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -313,13 +298,8 @@ def get_route_options(
 ):
     """경로 옵션 조회 엔드포인트"""
     
-<<<<<<< HEAD
     # 경로 조회 (옵션과 함께 로드 -> N+1 문제 해결)
     route = db.query(Route).options(joinedload(Route.options)).filter(
-=======
-    # 경로 조회 (Route.id는 UUID 문자열)
-    route = db.query(Route).filter(
->>>>>>> main
         Route.id == route_id,
         Route.user_id == current_user.id
     ).first()
@@ -1042,58 +1022,38 @@ async def recommend_route_async(
 ):
     """
     비동기 경로 추천 엔드포인트 (진행률 바 지원)
+    """
+    task_id = str(uuid.uuid4())
     
-    try:
-        print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
-        print(f"📝 [경로저장] SVG Path 길이: {len(request.svg_path)} characters")
-        
-        # Route 생성
-        route = Route(
-            id=str(uuid.uuid4()),
-            user_id=current_user.id,
-            name=request.name,
-            type="custom",  # 커스텀 그리기
-            mode="none",    # 도형 그리기 (운동 모드 없음)
-            start_latitude=request.location.latitude,
-            start_longitude=request.location.longitude,
-            svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
-            status="active"
-        )
-        
-        print(f"✅ [경로저장] Route 객체 생성 완료: id={route.id}")
-        
-        db.add(route)
-        print(f"✅ [경로저장] DB에 추가 완료, commit 시도 중...")
-        
-        db.commit()
-        print(f"✅ [경로저장] Commit 성공!")
-        
-        db.refresh(route)
-        print(f"✅ [경로저장] Refresh 완료")
-        
-        return SaveCustomDrawingResponseWrapper(
-            success=True,
-            data=SaveCustomDrawingResponse(
-                route_id=route.id,
-                name=route.name,
-                svg_path=route.svg_path,  # 컬럼명 수정
-                estimated_distance=request.estimated_distance,
-                created_at=route.created_at
-            ),
-            message="커스텀 경로가 성공적으로 저장되었습니다"
-        )
-        
-    except Exception as e:
-        print(f"❌ [경로저장] 에러 발생: {type(e).__name__}")
-        print(f"❌ [경로저장] 에러 메시지: {str(e)}")
-        import traceback
-        print(f"❌ [경로저장] 스택 트레이스:\n{traceback.format_exc()}")
-        
-        db.rollback()
-        raise ValidationException(
-            message=f"경로 저장 중 오류가 발생했습니다: {str(e)}",
-            field="route"
-        )
+    # Task 생성
+    task = RouteGenerationTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        progress=0,
+        current_step="초기화 중...",
+        request_data=request.model_dump(),
+        total_candidates=6
+    )
+    db.add(task)
+    db.commit()
+    
+    # 백그라운드 작업 시작
+    # 순환 참조 방지를 위해 함수 내부에서 import
+    from app.services.background_tasks import run_generate_route_background
+    
+    background_tasks.add_task(
+        run_generate_route_background,
+        task_id=task_id,
+        user_id=current_user.id,
+        request_data=request.model_dump()
+    )
+    
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "message": "경로 생성이 시작되었습니다"
+    }
 
 # ============================================
 # GPS 아트 경로 생성 (save_custom_drawing / get_shape_templates 활용)
