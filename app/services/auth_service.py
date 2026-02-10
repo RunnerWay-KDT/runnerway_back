@@ -154,7 +154,7 @@ class AuthService:
             access_token=access_token,
             refresh_token=refresh_token_str,
             token_type="bearer",
-            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+            expires_in=settings.ACCESS_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
         )
     
     def refresh_access_token(self, refresh_token_str: str) -> Tuple[str, int]:
@@ -180,7 +180,7 @@ class AuthService:
         
         # 4. 새 액세스 토큰 생성
         new_access_token = create_access_token({"sub": user.id})
-        expires_in = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        expires_in = settings.ACCESS_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
         
         return new_access_token, expires_in
     
