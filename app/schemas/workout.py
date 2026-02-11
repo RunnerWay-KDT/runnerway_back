@@ -149,6 +149,7 @@ class WorkoutSummarySchema(BaseModel):
     """운동 기록 요약 스키마 (목록 조회용)"""
     id: str
     route_id: Optional[str] = None
+    route_option_id: Optional[str] = None
     route_name: str
     type: Optional[str] = None
     mode: Optional[str] = None

@@ -56,11 +56,16 @@ def get_my_profile(
 ):
     """내 프로필 조회 엔드포인트"""
     
+    # 북마크한 경로 수 계산
+    saved_routes_count = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id
+    ).count()
+    
     # 통계 정보
     stats = UserStatsDetailSchema(
         total_distance=float(current_user.stats.total_distance) if current_user.stats else 0,
         total_workouts=current_user.stats.total_workouts if current_user.stats else 0,
-        completed_routes=current_user.stats.completed_routes if current_user.stats else 0
+        saved_routes_count=saved_routes_count
     )
     
     # 설정 정보
@@ -133,11 +138,16 @@ def update_my_profile(
     db.commit()
     db.refresh(current_user)
     
+    # 북마크한 경로 수 계산
+    saved_routes_count = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id
+    ).count()
+    
     # 통계 정보
     stats = UserStatsDetailSchema(
         total_distance=float(current_user.stats.total_distance) if current_user.stats else 0,
         total_workouts=current_user.stats.total_workouts if current_user.stats else 0,
-        completed_routes=current_user.stats.completed_routes if current_user.stats else 0
+        saved_routes_count=saved_routes_count
     )
     
     # 응답 데이터
