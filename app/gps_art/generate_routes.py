@@ -177,7 +177,7 @@ def generate_routes(
 
     # 로테이션 각도 설정
     if enable_rotation:
-        angles = rotation_angles or [0, 15, 30, 45, 60, -15, -30, -45]
+        angles = rotation_angles or [i for i in range(-180, 180, 10)]
     else:
         angles = [0.0]
 
@@ -214,6 +214,7 @@ def generate_routes(
         ) as executor:
             futures = {executor.submit(_run_one_candidate, t): t for t in tasks}
             done = 0
+            last_reported_percent = 0
             for future in as_completed(futures):
                 try:
                     result = future.result()
@@ -225,7 +226,9 @@ def generate_routes(
                 
                 if on_progress and len(tasks) > 0:
                     percent = 10 + int(70 * done / len(tasks))
-                    on_progress(min(percent, 80), "processing")
+                    if percent - last_reported_percent >= 5:
+                        last_reported_percent = percent
+                        on_progress(min(percent, 80), "processing")
 
             if on_progress:
                 on_progress(85, "processing")

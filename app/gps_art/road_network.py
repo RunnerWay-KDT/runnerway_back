@@ -2,7 +2,7 @@ import osmnx as ox
 import networkx as nx
 import numpy as np
 from typing import Tuple, List, Optional, Dict, Any
-import logging
+import logging, os
 from math import radians, cos, sin, asin, sqrt
 
 # 프로그램 전체의 로깅 규칙을 INFO 레벨로 정함
@@ -17,6 +17,8 @@ class RoadNetworkFetcher:
         ox.settings.use_cache = True
         ox.settings.log_console = True
         ox.settings.timeout = timeout
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        ox.settings.cache_folder = os.path.join(base, 'cache')
         self.timeout = timeout
 
     # 출발지 좌표를 중심으로 반경 내 보행자 도로 네트워크를 추출
@@ -25,7 +27,7 @@ class RoadNetworkFetcher:
         center_point: Tuple[float, float], # (latitude, longitude)
         distance: float = 1000, # 미터 단위 반경
         network_type: str = 'walk',
-        simplify: bool = True
+        simplify: bool = True,
     ) -> nx.Graph:
         """
         Args:
