@@ -164,7 +164,7 @@ def generate_gps_art_impl(
 
     # 공통: RouteOption 3건 생성
     option_names = ["1순위 (가장 유사)", "2순위", "3순위"]
-    tags = [None, "추천", "BEST"]
+    tags = ["BEST", "추천", None]
     option_ids: List[str] = []
 
     routes_list = result["routes"]

@@ -1,7 +1,8 @@
 import osmnx as ox
 import networkx as nx
-from typing import Tuple, List, Optional, Dict
-import logging
+import numpy as np
+from typing import Tuple, List, Optional, Dict, Any
+import logging, os
 from math import radians, cos, sin, asin, sqrt
 
 # 프로그램 전체의 로깅 규칙을 INFO 레벨로 정함
@@ -16,6 +17,8 @@ class RoadNetworkFetcher:
         ox.settings.use_cache = True
         ox.settings.log_console = True
         ox.settings.timeout = timeout
+        base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+        ox.settings.cache_folder = os.path.join(base, 'cache')
         self.timeout = timeout
 
     # 출발지 좌표를 중심으로 반경 내 보행자 도로 네트워크를 추출
@@ -24,7 +27,7 @@ class RoadNetworkFetcher:
         center_point: Tuple[float, float], # (latitude, longitude)
         distance: float = 1000, # 미터 단위 반경
         network_type: str = 'walk',
-        simplify: bool = True
+        simplify: bool = True,
     ) -> nx.Graph:
         """
         Args:
@@ -57,6 +60,9 @@ class RoadNetworkFetcher:
 
             # 후처리: MultiDiGraph -> Graph 변환 및 pos 속성 추가
             G = self._postprocess_graph(G)
+
+            # degree-2 체인 압축으로 노드/엣지 수 줄이기
+            G = self._compress_degree_2_chains(G)
 
             logger.info(f"Built graph with {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
 
@@ -375,6 +381,55 @@ class RoadNetworkFetcher:
                 f"Query might timeout. Consider splitting the area."
             )
 
+    # degree=2인 중간 노드들을 제거하고, 양 끝 노드를 하나의 엣지로 연결.
+    # - 실제 도로 토폴로지는 유지하되, 노드/엣지 수만 줄인다.
+    # - 엣지 길이(length)는 합쳐서 저장한다.
+    def _compress_degree_2_chains(self, G: nx.Graph) -> nx.Graph:
+        G = G.copy()
+        removed = True
+
+        while removed:
+            removed = False
+            # 순회 중 그래프가 바뀌므로, 노드 리스트를 따로 뽑아둠
+            for node in list(G.nodes()):
+                # 교차로/끝점 등은 degree != 2이므로 건드리지 않음
+                if G.degree(node) != 2:
+                    continue
+
+                neighbors = list(G.neighbors(node))
+                if len(neighbors) != 2:
+                    continue
+
+                u, v = neighbors
+
+                # 이미 u-v 엣지가 있으면 패스
+                if G.has_edge(u, v):
+                    continue
+
+                data_u = G.get_edge_data(u, node, default={})
+                data_v = G.get_edge_data(node, v, default={})
+
+                len_u = data_u.get('length', 0.0) if isinstance(data_u, dict) else 0.0
+                len_v = data_v.get('length', 0.0) if isinstance(data_v, dict) else 0.0
+                new_length = len_u + len_v
+
+                # edge 속성 머지: dict 형태만 대상으로, 키가 문자열인 것만 모음
+                attrs: Dict[str, Any] = {}
+
+                for d in (data_u, data_v):
+                    if isinstance(d, dict):
+                        for key, val in d.items():
+                            if isinstance(key, str):
+                                attrs[key] = val
+
+                # pos 등 기타 속성은 u-v 중 어느 한쪽/합친 dict를 사용
+                attrs["length"] = new_length
+                G.add_edge(u, v, **attrs)
+                G.remove_node(node)
+                removed = True
+
+        return G
+
 # 구 위에 두 지점 사이의 최단 거리(대권 거리, Great-circle distance)를 구하는 공식 (미터 단위)
 def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> float:
     """
@@ -404,46 +459,29 @@ def haversine_distance(pos1: Tuple[float, float], pos2: Tuple[float, float]) -> 
     # 호의 길이
     return c * r
 
-# 사용 예시
-if __name__ == "__main__":
-    fetcher = RoadNetworkFetcher(timeout=30)
+def haversine_matrix_meters(
+    lon1: np.ndarray, lat1: np.ndarray,
+    lon2: np.ndarray, lat2: np.ndarray,
+) -> np.ndarray:
+    """
+    (N,) vs (M,) -> (N, M) 하버 사인 거리 행렬 (미터 단위).
 
-    # 방법 1: 출발지 중심으로 추출
-    start_point = (37.5007, 127.0369)  # 역삼역 (위도, 경도)
-    
-    # 네트워크 추출
-    graph = fetcher.fetch_pedestrian_network_from_point(
-        center_point=start_point,
-        distance=2000,  # 2km 반경
-        network_type='walk',
-        simplify=False
-    )
-    
-    print(f"네트워크: {graph.number_of_nodes()}개 노드, {graph.number_of_edges()}개 엣지")
-    
-    # 예시: 그림 좌표 (실제로는 사용자가 그린 그림에서 가져옴)
-    drawing_coords = [
-        (127.0369, 37.5007),  # 출발지
-        (127.0370, 37.5010),
-        (127.0375, 37.5015),
-        (127.0380, 37.5020),
-        (127.0369, 37.5007),  # 다시 출발지로
-    ]
-    
-    # 최소 거리 계산
-    min_distance = fetcher.calculate_drawing_minimum_distance(drawing_coords)
-    print(f"\n그림의 최소 거리: {min_distance/1000:.2f}km")
-    
-    # 사용자가 입력한 목표 거리
-    target_distance = 5000  # 5km
-    
-    # 거리 검증
-    validation = fetcher.validate_target_distance(min_distance, target_distance)
-    
-    print(f"\n검증 결과:")
-    print(validation["message"])
-    
-    if not validation["is_valid"]:
-        print("\n옵션:")
-        for i, option in enumerate(validation["options"], 1):
-            print(f"  {i}. {option}")
+    lon1, lat1: (N,) 도 단위
+    lon2, lat2: (M,) 도 단위
+    반환값: shape (N, M), [i, j] = (lon1[i], lat1[i]) ~ (lon2[j], lat2[j]) 거리(m)
+    """
+    lon1_rad = np.deg2rad(lon1)
+    lat1_rad = np.deg2rad(lat1)
+    lon2_rad = np.deg2rad(lon2)
+    lat2_rad = np.deg2rad(lat2)
+
+    # (N, 1) - (1, M) 브로드캐스트 (for문이 아닌 행렬 연산으로 한 번에 계산)
+    dlon = lon2_rad - lon1_rad[:, None] # (N, M)
+    dlat = lat2_rad - lat1_rad[:, None]
+
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1_rad)[:, None] * np.cos(lat2_rad)[None, :] * np.sin(dlon / 2.0) ** 2
+    a = np.clip(a, 0.0, 1.0)
+    c = 2.0 * np.arcsin(np.sqrt(a))
+    r = 6371000.0
+
+    return r * c
