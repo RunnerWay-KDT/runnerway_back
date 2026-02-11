@@ -13,8 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 # API 라우터 불러오기
 from app.api.v1.router import api_router
-# 데이터베이스 초기화 함수
-from app.db.database import create_tables
 
 
 @asynccontextmanager
@@ -30,18 +28,14 @@ async def lifespan(app: FastAPI):
     - asynccontextmanager는 비동기 컨텍스트 매니저를 만들어줍니다.
     """
     # ========== 서버 시작 시 실행 ==========
-    print("🚀 러너웨이 서버를 시작합니다...")
-    print(f"📦 환경: {settings.ENVIRONMENT}")
-    print(f"🔧 디버그 모드: {settings.DEBUG}")
-    
-    # 데이터베이스 테이블 생성 (주석 처리 - 수동으로 관리)
-    # create_tables()
-    # print("✅ 데이터베이스 테이블 초기화 완료")
+    print("러너웨이 서버를 시작합니다...")
+    print(f"환경: {settings.ENVIRONMENT}")
+    print(f"디버그 모드: {settings.DEBUG}")
     
     yield  # 여기서 서버가 실행됩니다
     
     # ========== 서버 종료 시 실행 ==========
-    print("👋 러너웨이 서버를 종료합니다...")
+    print("러너웨이 서버를 종료합니다...")
 
 
 # ============================================
@@ -128,7 +122,7 @@ async def root():
     """
     return {
         "status": "ok",
-        "message": "🏃‍♂️ 러너웨이 API 서버가 실행 중입니다!",
+        "message": "러너웨이 API 서버가 실행 중입니다!",
         "version": "1.0.0",
         "docs": "/docs"
     }
@@ -162,5 +156,6 @@ if __name__ == "__main__":
         "app.main:app",  # 앱 경로 (모듈:변수)
         host="0.0.0.0",  # 모든 IP에서 접속 허용
         port=8000,        # 포트 번호
-        reload=True       # 코드 변경 시 자동 재시작
+        reload=True,       # 코드 변경 시 자동 재시작
+        reload_excludes=["venv/*"]  # venv 폴더는 제외
     )

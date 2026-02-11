@@ -71,5 +71,5 @@ __all__ = [
     "PostLike",
     "PostBookmark",
     "Comment",
-    "CommentLike"
+    "CommentLike",
 ]

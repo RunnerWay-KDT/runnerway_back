@@ -60,6 +60,8 @@ starlette>=0.40.0,<1.0
 # --------------------------------------------
 # osmnx - OSM 도로/보행자 네트워크 추출 (road_network.py)
 osmnx>=1.9.0
+# scikit-learn - osmnx의 unprojected 그래프 검색에 필요
+scikit-learn>=1.3.0
 # networkx - 그래프 경로 탐색 (gps_art_router.py)
 networkx>=3.0
 # numpy - 수치 연산
@@ -83,4 +85,19 @@ pytest==8.0.0
 # pytest-asyncio - 비동기 테스트 지원
 pytest-asyncio==0.23.3
 
+# pytest-asyncio - 비동기 테스트 지원
+pytest-asyncio==0.23.3
+
 # httpx - 테스트용 HTTP 클라이언트 (위에서 이미 설치)
+
+# --------------------------------------------
+# AI / 경로 생성
+# --------------------------------------------
+osmnx>=1.9.0
+networkx>=3.1
+
+# tenacity - 외부 API 재시도 로직
+tenacity>=8.0.0
+
+# srtm.py - SRTM 고도 데이터 조회 (로컬 파일 기반, API 호출 불필요)
+srtm.py>=0.3.7

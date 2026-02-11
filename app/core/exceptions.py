@@ -275,6 +275,20 @@ class ServiceUnavailableException(RunnerWayException):
         )
 
 
+class ExternalAPIException(RunnerWayException):
+    """
+    외부 API 호출 실패 예외 (502)
+    
+    OSMnx 등 외부 서비스 호출 실패 시 사용
+    """
+    def __init__(self, message: str = "외부 서비스 호출에 실패했습니다"):
+        super().__init__(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            error_code="EXTERNAL_API_ERROR",
+            message=message
+        )
+
+
 class TooManyRequestsException(RunnerWayException):
     """
     요청 횟수 초과 예외 (429)
