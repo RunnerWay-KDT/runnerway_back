@@ -17,7 +17,7 @@ class UserStatsDetailSchema(BaseModel):
     """사용자 통계 상세 스키마"""
     total_distance: float = 0  # km
     total_workouts: int = 0
-    completed_routes: int = 0
+    saved_routes_count: int = 0  # 북마크한 경로 수
     
     class Config:
         from_attributes = True

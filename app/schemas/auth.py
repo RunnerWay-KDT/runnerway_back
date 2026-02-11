@@ -77,7 +77,7 @@ class UserStatsSchema(BaseModel):
     """
     total_distance: float = Field(0, description="총 운동 거리 (km)")
     total_workouts: int = Field(0, description="총 운동 횟수")
-    completed_routes: int = Field(0, description="완료한 경로 수")
+    saved_routes_count: int = Field(0, description="북마크한 경로 수")
     
     class Config:
         from_attributes = True

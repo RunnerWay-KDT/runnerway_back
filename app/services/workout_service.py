@@ -2,6 +2,7 @@
 # app/services/workout_service.py - 운동 서비스
 # ============================================
 # 운동 시작, 트래킹, 완료, 기록 조회 등 운동 관련 비즈니스 로직을 처리합니다.
+# workouts 테이블, workout_splits 테이블에 맞춰 구현되었습니다.
 # ============================================
 
 from typing import Optional, List, Dict, Any
@@ -19,23 +20,23 @@ class WorkoutService:
     """
     운동 서비스 클래스
     
-    [신입 개발자를 위한 설명]
-    운동 관련 모든 비즈니스 로직을 담당합니다.
-    - 운동 세션 시작/일시정지/재개/완료
-    - 실시간 트래킹 데이터 저장
-    - 운동 통계 계산
-    - 업적 확인
+    workouts 테이블 컬럼:
+      id, user_id, route_id, route_option_id, route_name,
+      type (preset/custom/null), mode (running/walking/null),
+      status (active/paused/completed),
+      started_at, completed_at,
+      start_latitude, start_longitude, end_latitude, end_longitude,
+      distance, duration, avg_pace, max_pace, min_pace,
+      calories, elevation_gain, elevation_loss, route_completion,
+      actual_path (JSON: [{lat, lng, timestamp}]),
+      created_at, updated_at, deleted_at
+    
+    workout_splits 테이블 컬럼:
+      id, workout_id, km, pace, duration
     """
     
     def __init__(self, db: Session):
-        """
-        WorkoutService 초기화
-        
-        Args:
-            db: 데이터베이스 세션
-        """
         self.db = db
-    
     
     # ============================================
     # 운동 세션 관리
@@ -43,30 +44,38 @@ class WorkoutService:
     
     def start_workout(
         self,
-        user_id: int,
-        workout_type: str,
-        route_id: int = None,
-        option_id: int = None
+        user_id: str,
+        route_name: str,
+        start_latitude: float,
+        start_longitude: float,
+        started_at: datetime,
+        route_id: str = None,
+        route_option_id: str = None,
+        workout_type: str = None,
+        mode: str = None,
     ) -> Workout:
         """
-        운동 세션 시작
+        운동 세션 시작 → workouts 테이블에 INSERT
         
         Args:
-            user_id: 사용자 ID
-            workout_type: 운동 타입 (running/walking)
-            route_id: 선택한 경로 ID
-            option_id: 선택한 경로 옵션 ID
+            user_id: 사용자 UUID
+            route_name: 경로 이름 (스냅샷)
+            start_latitude: 시작점 위도
+            start_longitude: 시작점 경도
+            started_at: 시작 시간 (클라이언트 전달)
+            route_id: 경로 ID (선택)
+            route_option_id: 경로 옵션 ID (선택)
+            workout_type: preset / custom / None
+            mode: running / walking / None
         
         Returns:
             Workout: 생성된 운동 세션
-        
-        Raises:
-            ValidationException: 이미 진행 중인 운동이 있는 경우
         """
         # 이미 진행 중인 운동 확인
         active = self.db.query(Workout).filter(
             Workout.user_id == user_id,
-            Workout.status == "active"
+            Workout.status.in_(["active", "paused"]),
+            Workout.deleted_at.is_(None)
         ).first()
         
         if active:
@@ -75,26 +84,17 @@ class WorkoutService:
                 field="workout"
             )
         
-        # 경로 옵션 정보 조회
-        route_name = None
-        
-        if option_id:
-            option = self.db.query(RouteOption).filter(
-                RouteOption.id == option_id
-            ).first()
-            
-            if option and option.route:
-                route_name = option.route.name
-        
-        # 운동 세션 생성
         workout = Workout(
             user_id=user_id,
-            type=workout_type,
             route_id=route_id,
-            route_option_id=option_id,
+            route_option_id=route_option_id,
             route_name=route_name,
+            type=workout_type,
+            mode=mode,
             status="active",
-            started_at=datetime.utcnow()
+            started_at=started_at,
+            start_latitude=start_latitude,
+            start_longitude=start_longitude,
         )
         
         self.db.add(workout)
@@ -104,87 +104,45 @@ class WorkoutService:
         return workout
     
     
-    def pause_workout(self, workout_id: int, user_id: int) -> Workout:
-        """
-        운동 일시정지
-        
-        Args:
-            workout_id: 운동 ID
-            user_id: 사용자 ID
-        
-        Returns:
-            Workout: 업데이트된 운동 세션
-        
-        Raises:
-            NotFoundException: 운동을 찾을 수 없는 경우
-            ValidationException: 진행 중인 운동이 아닌 경우
-        """
-        workout = self._get_workout(workout_id, user_id)
-        
-        if workout.status != "active":
-            raise ValidationException(
-                message="진행 중인 운동만 일시정지할 수 있습니다",
-                field="status"
-            )
-        
-        workout.status = "paused"
-        workout.paused_at = datetime.utcnow()
-        self.db.commit()
-        
-        return workout
-    
-    
-    def resume_workout(self, workout_id: int, user_id: int) -> Workout:
-        """
-        운동 재개
-        
-        Args:
-            workout_id: 운동 ID
-            user_id: 사용자 ID
-        
-        Returns:
-            Workout: 업데이트된 운동 세션
-        """
-        workout = self._get_workout(workout_id, user_id)
-        
-        if workout.status != "paused":
-            raise ValidationException(
-                message="일시정지된 운동만 재개할 수 있습니다",
-                field="status"
-            )
-        
-        # 일시정지 시간 계산
-        if workout.paused_at:
-            pause_duration = int((datetime.utcnow() - workout.paused_at).total_seconds())
-            workout.total_pause_time = (workout.total_pause_time or 0) + pause_duration
-        
-        workout.status = "active"
-        workout.paused_at = None
-        self.db.commit()
-        
-        return workout
-    
-    
     def complete_workout(
         self,
-        workout_id: int,
-        user_id: int,
-        final_distance: float = None,
-        final_duration: int = None,
-        final_path: List[Dict] = None
-    ) -> tuple[Workout, List]:
+        workout_id: str,
+        user_id: str,
+        completed_at: datetime,
+        distance: float,
+        duration: int,
+        avg_pace: str,
+        calories: int,
+        actual_path: List[Dict[str, Any]],
+        splits: List[Dict[str, Any]] = None,
+        end_latitude: float = None,
+        end_longitude: float = None,
+        max_pace: str = None,
+        min_pace: str = None,
+        elevation_gain: int = None,
+        elevation_loss: int = None,
+        route_completion: float = None,
+    ) -> Workout:
         """
-        운동 완료
+        운동 완료 → workouts 테이블 UPDATE + workout_splits 테이블 INSERT
         
         Args:
-            workout_id: 운동 ID
-            user_id: 사용자 ID
-            final_distance: 최종 거리 (km)
-            final_duration: 최종 시간 (초)
-            final_path: 최종 이동 경로
-        
-        Returns:
-            tuple: (완료된 운동, 달성한 업적 목록)
+            workout_id: 운동 UUID
+            user_id: 사용자 UUID
+            completed_at: 완료 시간
+            distance: 총 거리 (km)
+            duration: 총 시간 (초)
+            avg_pace: 평균 페이스 (예: "6'30\"")
+            calories: 소모 칼로리 (kcal)
+            actual_path: [{lat, lng, timestamp}] 배열
+            splits: [{km, pace, duration}] 배열
+            end_latitude: 종료 위도
+            end_longitude: 종료 경도
+            max_pace: 최고 페이스
+            min_pace: 최저 페이스
+            elevation_gain: 상승 고도 누적합
+            elevation_loss: 하강 고도 누적합
+            route_completion: 경로 완주율 (%)
         """
         workout = self._get_workout(workout_id, user_id)
         
@@ -194,50 +152,79 @@ class WorkoutService:
                 field="status"
             )
         
-        # 최종 데이터 업데이트
-        if final_distance:
-            workout.distance = final_distance
-        if final_duration:
-            workout.duration = final_duration
-        if final_path:
-            workout.path_data = {"coordinates": final_path}
-        
-        # 페이스 계산
-        if workout.distance and float(workout.distance) > 0 and workout.duration:
-            workout.avg_pace = (workout.duration / 60) / float(workout.distance)
-        
-        # 칼로리 계산
-        workout.calories = self._calculate_calories(
-            workout.type,
-            workout.duration
-        )
-        
-        # 완료 처리
+        # ---- workouts 테이블 업데이트 ----
         workout.status = "completed"
-        workout.completed_at = datetime.utcnow()
+        workout.completed_at = completed_at
+        workout.distance = distance
+        workout.duration = duration
+        workout.avg_pace = avg_pace
+        workout.max_pace = max_pace
+        workout.min_pace = min_pace
+        workout.calories = calories
+        workout.elevation_gain = elevation_gain
+        workout.elevation_loss = elevation_loss
+        workout.route_completion = route_completion
+        workout.actual_path = actual_path
         
-        # 사용자 통계 업데이트
+        if end_latitude is not None:
+            workout.end_latitude = end_latitude
+        if end_longitude is not None:
+            workout.end_longitude = end_longitude
+        
+        # ---- workout_splits 테이블에 구간 기록 저장 ----
+        if splits:
+            for split_data in splits:
+                split = WorkoutSplit(
+                    workout_id=workout.id,
+                    km=split_data["km"],
+                    pace=split_data["pace"],
+                    duration=split_data["duration"],
+                )
+                self.db.add(split)
+        
+        # ---- 사용자 통계 업데이트 ----
         self._update_user_stats(user_id, workout)
         
         self.db.commit()
+        self.db.refresh(workout)
         
-        # 업적 확인
-        achievements = self._check_achievements(user_id, workout)
-        
-        return workout, achievements
+        return workout
     
     
-    def cancel_workout(self, workout_id: int, user_id: int) -> bool:
-        """
-        운동 취소
+    def pause_workout(self, workout_id: str, user_id: str) -> Workout:
+        """운동 일시정지"""
+        workout = self._get_workout(workout_id, user_id)
         
-        Args:
-            workout_id: 운동 ID
-            user_id: 사용자 ID
+        if workout.status != "active":
+            raise ValidationException(
+                message="진행 중인 운동만 일시정지할 수 있습니다",
+                field="status"
+            )
         
-        Returns:
-            bool: 취소 성공 여부
-        """
+        workout.status = "paused"
+        self.db.commit()
+        
+        return workout
+    
+    
+    def resume_workout(self, workout_id: str, user_id: str) -> Workout:
+        """운동 재개"""
+        workout = self._get_workout(workout_id, user_id)
+        
+        if workout.status != "paused":
+            raise ValidationException(
+                message="일시정지된 운동만 재개할 수 있습니다",
+                field="status"
+            )
+        
+        workout.status = "active"
+        self.db.commit()
+        
+        return workout
+    
+    
+    def cancel_workout(self, workout_id: str, user_id: str) -> bool:
+        """운동 취소 (Soft Delete)"""
         workout = self._get_workout(workout_id, user_id)
         
         if workout.status == "completed":
@@ -246,7 +233,24 @@ class WorkoutService:
                 field="status"
             )
         
-        workout.status = "cancelled"
+        workout.deleted_at = datetime.utcnow()
+        self.db.commit()
+        
+        return True
+    
+    
+    def delete_workout(self, workout_id: str, user_id: str) -> bool:
+        """
+        운동 기록 삭제 (Soft Delete)
+        완료된 운동 기록도 삭제할 수 있습니다.
+        삭제 시 사용자 통계(user_stats)도 차감합니다.
+        """
+        workout = self._get_workout(workout_id, user_id)
+        
+        # 완료된 운동이면 통계 차감
+        if workout.status == "completed":
+            self._revert_user_stats(user_id, workout)
+        
         workout.deleted_at = datetime.utcnow()
         self.db.commit()
         
@@ -254,195 +258,88 @@ class WorkoutService:
     
     
     # ============================================
-    # 트래킹 데이터 관리
-    # ============================================
-    
-    def save_track_data(
-        self,
-        workout_id: int,
-        coordinates: List[Dict],
-        current_distance: float = None,
-        current_duration: int = None
-    ) -> Dict[str, Any]:
-        """
-        트래킹 데이터 저장
-        
-        Args:
-            workout_id: 운동 ID
-            coordinates: 좌표 배열
-            current_distance: 현재 거리
-            current_duration: 현재 시간
-        
-        Returns:
-            Dict: 현재 운동 상태
-        """
-        workout = self.db.query(Workout).filter(
-            Workout.id == workout_id
-        ).first()
-        
-        if not workout:
-            raise NotFoundException(
-                resource="Workout",
-                resource_id=workout_id
-            )
-        
-        # 좌표 데이터 저장 (path_data JSON 필드에)
-        existing_path = workout.path_data or {"coordinates": []}
-        for coord in coordinates:
-            existing_path["coordinates"].append({
-                "lat": coord.get("lat"),
-                "lng": coord.get("lng"),
-                "altitude": coord.get("altitude"),
-                "speed": coord.get("speed"),
-                "timestamp": coord.get("timestamp", datetime.utcnow().isoformat())
-            })
-        workout.path_data = existing_path
-        
-        # 현재 상태 업데이트
-        if current_distance:
-            workout.distance = current_distance
-        if current_duration:
-            workout.duration = current_duration
-        
-        self.db.commit()
-        
-        # 페이스 계산
-        avg_pace = None
-        if workout.distance and float(workout.distance) > 0 and workout.duration:
-            avg_pace = (workout.duration / 60) / float(workout.distance)
-        
-        # 칼로리 계산
-        calories = self._calculate_calories(workout.type, workout.duration)
-        
-        return {
-            "distance": float(workout.distance) if workout.distance else 0,
-            "duration": workout.duration or 0,
-            "avg_pace": round(avg_pace, 2) if avg_pace else None,
-            "calories": calories,
-            "is_off_route": False  # TODO: 경로 이탈 감지 구현
-        }
-    
-    
-    # ============================================
     # 운동 기록 조회
     # ============================================
     
-    def get_workout(self, workout_id: int, user_id: int) -> Optional[Workout]:
-        """
-        운동 상세 조회
-        
-        Args:
-            workout_id: 운동 ID
-            user_id: 사용자 ID
-        
-        Returns:
-            Optional[Workout]: 운동 정보
-        """
+    def get_workout(self, workout_id: str, user_id: str) -> Optional[Workout]:
+        """운동 상세 조회"""
         return self._get_workout(workout_id, user_id)
     
     
     def get_workout_list(
         self,
-        user_id: int,
+        user_id: str,
         page: int = 1,
         limit: int = 20,
         workout_type: str = None,
         sort: str = "date_desc"
-    ) -> tuple[List[Workout], int]:
-        """
-        운동 기록 목록 조회
-        
-        Args:
-            user_id: 사용자 ID
-            page: 페이지 번호
-            limit: 페이지당 항목 수
-            workout_type: 운동 타입 필터
-            sort: 정렬 방식
-        
-        Returns:
-            tuple: (운동 목록, 전체 개수)
-        """
+    ) -> tuple:
+        """운동 기록 목록 조회"""
         query = self.db.query(Workout).filter(
             Workout.user_id == user_id,
             Workout.status == "completed",
             Workout.deleted_at.is_(None)
         )
         
-        # 타입 필터
         if workout_type:
             query = query.filter(Workout.type == workout_type)
         
-        # 정렬
         if sort == "distance_desc":
             query = query.order_by(Workout.distance.desc())
         elif sort == "calories_desc":
             query = query.order_by(Workout.calories.desc())
+        elif sort == "date_asc":
+            query = query.order_by(Workout.completed_at.asc())
         else:
             query = query.order_by(Workout.completed_at.desc())
         
         total = query.count()
-        
         offset = (page - 1) * limit
         workouts = query.offset(offset).limit(limit).all()
         
         return workouts, total
     
     
-    def get_active_workout(self, user_id: int) -> Optional[Workout]:
-        """
-        현재 진행 중인 운동 조회
-        
-        Args:
-            user_id: 사용자 ID
-        
-        Returns:
-            Optional[Workout]: 진행 중인 운동 (없으면 None)
-        """
+    def get_active_workout(self, user_id: str) -> Optional[Workout]:
+        """현재 진행 중인 운동 조회"""
         return self.db.query(Workout).filter(
             Workout.user_id == user_id,
-            Workout.status.in_(["active", "paused"])
+            Workout.status.in_(["active", "paused"]),
+            Workout.deleted_at.is_(None)
         ).first()
     
     
-    def get_workout_tracks(self, workout_id: int) -> List[Dict]:
-        """
-        운동 트래킹 데이터 조회 (path_data JSON에서)
-        
-        Args:
-            workout_id: 운동 ID
-        
-        Returns:
-            List[Dict]: 트래킹 데이터 목록
-        """
-        workout = self.db.query(Workout).filter(
-            Workout.id == workout_id
-        ).first()
-        
-        if workout and workout.path_data:
-            return workout.path_data.get("coordinates", [])
-        return []
-    
-    
-    def get_workout_splits(self, workout_id: int) -> List[WorkoutSplit]:
-        """
-        운동 구간 기록 조회
-        
-        Args:
-            workout_id: 운동 ID
-        
-        Returns:
-            List[WorkoutSplit]: 구간 기록 목록
-        """
+    def get_workout_splits(self, workout_id: str) -> List[WorkoutSplit]:
+        """운동 구간 기록 조회 (workout_splits 테이블)"""
         return self.db.query(WorkoutSplit).filter(
             WorkoutSplit.workout_id == workout_id
-        ).order_by(WorkoutSplit.km_mark).all()
+        ).order_by(WorkoutSplit.km).all()
+    
+    
+    def get_planned_path(self, workout: Workout) -> Optional[List[Dict[str, Any]]]:
+        """
+        운동에 연결된 경로 옵션의 계획 경로(coordinates) 조회
+        
+        workouts.route_option_id → route_options.coordinates
+        """
+        if not workout.route_option_id:
+            return None
+        
+        route_option = self.db.query(RouteOption).filter(
+            RouteOption.id == workout.route_option_id
+        ).first()
+        
+        if not route_option or not route_option.coordinates:
+            return None
+        
+        return route_option.coordinates
     
     
     # ============================================
     # 헬퍼 메서드
     # ============================================
     
-    def _get_workout(self, workout_id: int, user_id: int) -> Workout:
+    def _get_workout(self, workout_id: str, user_id: str) -> Workout:
         """운동 조회 (내부용)"""
         workout = self.db.query(Workout).filter(
             Workout.id == workout_id,
@@ -459,11 +356,9 @@ class WorkoutService:
         return workout
     
     
-    def _calculate_calories(self, workout_type: str, duration: int) -> int:
+    def _calculate_calories(self, mode: str, duration: int) -> int:
         """
         칼로리 계산
-        
-        [공식]
         칼로리 = MET × 체중(kg) × 시간(hour)
         - 달리기 MET: 약 10
         - 걷기 MET: 약 3.5
@@ -471,24 +366,24 @@ class WorkoutService:
         if not duration:
             return 0
         
-        met = 10 if workout_type == "running" else 3.5
+        met = 10 if mode == "running" else 3.5
         weight = 70  # TODO: 실제 사용자 체중 사용
         hours = duration / 3600
         
         return int(met * weight * hours)
     
     
-    def _update_user_stats(self, user_id: int, workout: Workout):
-        """사용자 통계 업데이트"""
+    def _update_user_stats(self, user_id: str, workout: Workout):
+        """사용자 통계 업데이트 (user_stats 테이블)"""
         stats = self.db.query(UserStats).filter(
             UserStats.user_id == user_id
         ).first()
         
         if stats:
-            stats.total_distance += float(workout.distance) if workout.distance else 0
-            stats.total_workouts += 1
+            stats.total_distance = float(stats.total_distance or 0) + (float(workout.distance) if workout.distance else 0)
+            stats.total_workouts = (stats.total_workouts or 0) + 1
             if workout.status == "completed":
-                stats.completed_routes += 1
+                stats.completed_routes = (stats.completed_routes or 0) + 1
         else:
             stats = UserStats(
                 user_id=user_id,
@@ -499,27 +394,13 @@ class WorkoutService:
             self.db.add(stats)
     
     
-    def _check_achievements(self, user_id: int, workout: Workout) -> List[Dict]:
-        """
-        업적 확인
+    def _revert_user_stats(self, user_id: str, workout: Workout):
+        """운동 기록 삭제 시 사용자 통계 차감 (user_stats 테이블)"""
+        stats = self.db.query(UserStats).filter(
+            UserStats.user_id == user_id
+        ).first()
         
-        [TODO: 실제 업적 로직 구현]
-        """
-        achievements = []
-        
-        # 첫 운동 완료 체크
-        total = self.db.query(func.count(Workout.id)).filter(
-            Workout.user_id == user_id,
-            Workout.status == "completed"
-        ).scalar()
-        
-        if total == 1:
-            achievements.append({
-                "id": "first_workout",
-                "name": "첫 걸음",
-                "description": "첫 번째 운동을 완료했습니다!",
-                "icon": "🏃",
-                "unlocked_at": datetime.utcnow().isoformat()
-            })
-        
-        return achievements
+        if stats:
+            stats.total_distance = max(0, float(stats.total_distance or 0) - (float(workout.distance) if workout.distance else 0))
+            stats.total_workouts = max(0, (stats.total_workouts or 0) - 1)
+            stats.completed_routes = max(0, (stats.completed_routes or 0) - 1)
