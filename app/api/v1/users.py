@@ -422,6 +422,7 @@ def get_my_saved_routes(
                 "distance": distance,
                 "safety_score": safety_score,
                 "shape": shape_data,
+                "svg_path": route.svg_path,  # 커스텀 경로 SVG path 데이터
                 "author": author_data,
                 "location": {
                     "latitude": float(route.start_latitude) if route.start_latitude else 0,
