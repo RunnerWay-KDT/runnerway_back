@@ -312,15 +312,10 @@ def get_route_options(
             resource_id=route_id
         )
     
-<<<<<<< HEAD
     # 옵션 목록 조회
     options = db.query(RouteOption).filter(
         RouteOption.route_id == route_id
     ).order_by(RouteOption.option_number).all()
-=======
-    # 옵션 목록 (이미 로드됨)
-    options = route.options
->>>>>>> origin/feature/KAN-16/setting_path
     
     option_list = []
     for opt in options:
@@ -339,10 +334,6 @@ def get_route_options(
                 safety=getattr(opt, "safety_score", 0) or 0,
                 elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/feature/KAN-16/setting_path
             ),
         ))
     
