@@ -208,11 +208,17 @@ class AuthService:
     
     def _create_auth_response(self, user: User, tokens: TokensSchema) -> AuthResponseData:
         """인증 응답 데이터 생성 (내부 메서드)"""
+        # 북마크한 경로 수 계산
+        from app.models.route import SavedRoute
+        saved_routes_count = self.db.query(SavedRoute).filter(
+            SavedRoute.user_id == user.id
+        ).count()
+        
         # 통계 정보 생성
         stats = UserStatsSchema(
             total_distance=float(user.stats.total_distance) if user.stats else 0,
             total_workouts=user.stats.total_workouts if user.stats else 0,
-            completed_routes=user.stats.completed_routes if user.stats else 0
+            saved_routes_count=saved_routes_count
         )
         
         # 사용자 정보 생성

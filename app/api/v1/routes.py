@@ -21,7 +21,7 @@ from app.schemas.route import (
     RouteGenerateRequest, RouteGenerateResponse, RouteGenerateResponseWrapper,
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
-    RouteSaveRequest, RouteSaveResponse,
+    SaveRouteRequest, RouteSaveResponse,
     RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
     SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
@@ -413,8 +413,8 @@ def get_route_detail(
     description="경로를 저장(북마크)합니다."
 )
 def save_route(
-    route_id: int = Path(..., description="경로 ID"),
-    request: RouteSaveRequest = None,
+    route_id: str = Path(..., description="경로 ID"),
+    request: SaveRouteRequest = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -427,6 +427,20 @@ def save_route(
             resource="Route",
             resource_id=route_id
         )
+    
+    # route_option_id가 제공된 경우 해당 옵션이 존재하는지 확인
+    route_option_id = request.route_option_id if request else None
+    if route_option_id:
+        from app.models.route import RouteOption
+        option = db.query(RouteOption).filter(
+            RouteOption.id == route_option_id,
+            RouteOption.route_id == route_id
+        ).first()
+        if not option:
+            raise NotFoundException(
+                resource="RouteOption",
+                resource_id=route_option_id
+            )
     
     # 이미 저장했는지 확인
     existing = db.query(SavedRoute).filter(
@@ -444,8 +458,7 @@ def save_route(
     saved_route = SavedRoute(
         user_id=current_user.id,
         route_id=route_id,
-        custom_name=request.custom_name if request else None,
-        note=request.note if request else None
+        route_option_id=route_option_id,
     )
     db.add(saved_route)
     db.commit()
@@ -467,7 +480,7 @@ def save_route(
     description="저장한 경로를 삭제합니다."
 )
 def unsave_route(
-    route_id: int = Path(..., description="경로 ID"),
+    route_id: str = Path(..., description="경로 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
