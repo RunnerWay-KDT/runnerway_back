@@ -1,6 +1,6 @@
 from queue import PriorityQueue
 from typing import List, Tuple, Dict, Optional
-from .road_network import haversine_distance, RoadNetworkFetcher
+from .road_network import haversine_distance, RoadNetworkFetcher, haversine_matrix_meters
 from collections import defaultdict
 import networkx as nx
 import numpy as np
@@ -173,40 +173,116 @@ class GPSArtRouter:
 
         return sampled
 
-    # start -> goal 최단 경로(노드 ID 리스트). C2(엣지 길이)만 사용, 휴리스틱은 C1(목적지까지 거리).
+    # 양방향 A*: start·goal 양쪽에서 동시에 탐색해 만나는 지점에서 경로 연결. 품질(최단경로) 동일.
     def _a_star_between_nodes(self, start: int, goal: int) -> Optional[List[int]]:
-        frontier = PriorityQueue() # 우선순위 큐, 비용이 낮은 노드가 우선순위가 높음
-        frontier.put((0, start)) # 시작 노드를 우선순위 큐에 추가, 비용 0
-        came_from = {start: None} # 이전 노드 저장, 시작 노드는 이전 노드가 없음
-        cost_so_far = {start: 0} # 비용 저장, 시작 노드의 비용은 0
-        goal_pos = self.G.nodes[goal]['pos']
+        if start == goal:
+            return [start]
+        start_pos = self.G.nodes[start].get("pos")
+        goal_pos = self.G.nodes[goal].get("pos")
+        if not start_pos or not goal_pos:
+            return None
 
-        while not frontier.empty():
-            _, current = frontier.get() # 우선순위가 가장 낮은 노드를 꺼냄
-            # 경로 재구성
-            if current == goal:
-                path = []
-                while current is not None:
-                    path.append(current)
-                    current = came_from[current]
-                return path[::-1] # 경로 노드 ID 리스트 반환
-                
-            for neighbor in self.G.neighbors(current):
-                P = self.G.nodes[current]['pos']
-                N = self.G.nodes[neighbor]['pos']
-                # C2(엣지 길이)만 사용
-                edge_cost = self.C2_path_minimization(P, N)
-                new_cost = cost_so_far[current] + edge_cost
+        # Forward: start -> goal
+        frontier_f = PriorityQueue() # 우선순위 큐, 비용이 낮은 노드가 우선순위가 높음
+        frontier_f.put((0, start)) # 시작 노드를 우선순위 큐에 추가, 비용 0
+        came_from_f: Dict[int, Optional[int]] = {start: None} # 이전 노드 저장, 시작 노드는 이전 노드가 없음
+        cost_so_far_f: Dict[int, float] = {start: 0.0} # 비용 저장, 시작 노드의 비용은 0
 
-                if neighbor not in cost_so_far or new_cost < cost_so_far[neighbor]:
-                    cost_so_far[neighbor] = new_cost
-                    # C1(목적지까지 거리) 휴리스틱 사용
-                    heuristic = self.C1_distance_minimization(N, goal_pos)
-                    priority = new_cost + heuristic
-                    frontier.put((priority, neighbor))
-                    came_from[neighbor] = current
+        # Backward: goal -> start
+        frontier_b = PriorityQueue()
+        frontier_b.put((0, goal))
+        came_from_b: Dict[int, Optional[int]] = {goal: None}
+        cost_so_far_b: Dict[int, float] = {goal: 0.0}
 
-        return None
+        best_cost = float('inf')
+        best_path: Optional[List[int]] = None
+
+        def reconstruct_path(meet: int) -> List[int]:
+            # start -> meet
+            p_f: List[int] = []
+            c = meet
+            while c is not None:
+                p_f.append(c)
+                c = came_from_f.get(c)
+            p_f.reverse()
+            # meet -> goal (meet 제외하고 이어붙임)
+            p_b: List[int] = []
+            c = meet
+            while c is not None:
+                p_b.append(c)
+                c = came_from_b.get(c)
+            # p_b = [meet, ..., goal] 이므로 p_f + p_b[1:]
+            return p_f + p_b[1:]
+
+        while not frontier_f.empty() or not frontier_b.empty():
+            # Forward 한 번 확장
+            if not frontier_f.empty():
+                _, current_f = frontier_f.get()
+                g_f = cost_so_far_f[current_f]
+                if g_f + self.C1_distance_minimization(
+                    self.G.nodes[current_f]['pos'], goal_pos
+                ) >= best_cost:
+                    pass # 이쪽은 더 이상 개선 불가
+                else:
+                    if current_f in cost_so_far_b:
+                        total = g_f + cost_so_far_b[current_f]
+                        if total < best_cost:
+                            best_cost = total
+                            best_path = reconstruct_path(current_f)
+                    for neighbor in self.G.neighbors(current_f):
+                        P = self.G.nodes[current_f]['pos']
+                        N = self.G.nodes[neighbor]['pos']
+                        edge_cost = self.C2_path_minimization(P, N)
+                        new_cost = g_f + edge_cost
+                        if neighbor not in cost_so_far_f or new_cost < cost_so_far_f[neighbor]:
+                            cost_so_far_f[neighbor] = new_cost
+                            came_from_f[neighbor] = current_f
+                            heuristic = self.C1_distance_minimization(N, goal_pos)
+                            frontier_f.put((new_cost + heuristic, neighbor))
+
+            # Backward 한 번 확장
+            if not frontier_b.empty():
+                _, current_b = frontier_b.get()
+                g_b = cost_so_far_b[current_b]
+                if g_b + self.C1_distance_minimization(
+                    self.G.nodes[current_b]['pos'], start_pos
+                ) >= best_cost:
+                    pass
+                else:
+                    if current_b in cost_so_far_f:
+                        total = cost_so_far_f[current_b] + g_b
+                        if total < best_cost:
+                            best_cost = total
+                            best_path = reconstruct_path(current_b)
+                    for neighbor in self.G.neighbors(current_b):
+                        P = self.G.nodes[current_b]['pos']
+                        N = self.G.nodes[neighbor]['pos']
+                        edge_cost = self.C2_path_minimization(P, N)
+                        new_cost = g_b + edge_cost
+                        if neighbor not in cost_so_far_b or new_cost < cost_so_far_b[neighbor]:
+                            cost_so_far_b[neighbor] = new_cost
+                            came_from_b[neighbor] = current_b
+                            heuristic = self.C1_distance_minimization(N, start_pos)
+                            frontier_b.put((new_cost + heuristic, neighbor))
+
+            # frontier_f/ frontier_b 에 (f, node) 튜플을 넣어서 항상 f(= g + C1) 기준 최소 힙으로 유지
+            if best_path is not None:
+                # 각 프런티어에서 아직 남아 있는 최소 f 값
+                if not frontier_f.empty():
+                    f_min_f = frontier_f.queue[0][0] # (f, node)
+                else:
+                    f_min_f = float('inf')
+
+                if not frontier_b.empty():
+                    f_min_b = frontier_b.queue[0][0]
+                else:
+                    f_min_b = float('inf')
+
+                # 양쪽 최소 f의 합이 best_cost 이상이면 더 좋은 경로는 나올 수 없음 -> 종료
+                if f_min_f + f_min_b >= best_cost:
+                    return best_path
+
+        return best_path
 
     # 점에서 선분(그림의 한 구간)까지의 최단 거리(미터), haversine 사용
     def _distance_point_to_segment(
@@ -402,32 +478,45 @@ class GPSArtRouter:
 
         return waypoint_nodes
 
-    # waypoint 순서를 start_index부터 cyclic shift한 뒤, 
-    # 인접 waypoint 사이를 A*로 이어붙인 전체 노드 경로 반환
-    def build_full_path(
+    # waypoint 인접 쌍 (wp[i], wp[i+1]) 구간당 A* 1회만 수행해 세그먼트 경로 리스트 반환.
+    # start_idx 루프에서 재사용해 동일 구간 A* 중복 호출 제거.
+    def _compute_segment_paths(
         self,
         waypoint_nodes: List[int],
-        start_index: int,
-    ) -> Optional[List[int]]:
+    ) -> Optional[List[List[int]]]:
         if not waypoint_nodes:
             return None
         n = len(waypoint_nodes)
-        # cyclic shift: start_index가 n보다 크면 원형으로 돌아감(방어코드)
-        start_index = start_index % n 
-        node_sequence = waypoint_nodes[start_index:] + waypoint_nodes[:start_index]
-
-        full_path: List[int] = []
-        current_start = node_sequence[0]
-        for next_node in node_sequence[1:]:
-            sub_path = self._a_star_between_nodes(current_start, next_node)
+        segments: List[List[int]] = []
+        for i in range(n):
+            start_node = waypoint_nodes[i]
+            end_node = waypoint_nodes[(i + 1) % n]
+            sub_path = self._a_star_between_nodes(start_node, end_node)
             if not sub_path:
                 return None
-            if full_path and full_path[-1] == sub_path[0]:
-                full_path.extend(sub_path[1:])
-            else:
-                full_path.extend(sub_path)
-            current_start = next_node
+            segments.append(sub_path)
+        return segments
 
+    # 캐시된 세그먼트 경로들을 start_index부터 순서만 바꿔 이어붙여 전체 경로 반환.
+    # waypoint 순서를 start_index부터 cyclic shift한 뒤, 세그먼트 경로들을 이어붙여 전체 경로 반환.
+    def build_full_path(
+        self,
+        segment_paths: List[List[int]],
+        start_index: int,
+    ) -> Optional[List[int]]:
+        if not segment_paths:
+            return None
+        n = len(segment_paths)
+        start_index = start_index % n
+        full_path: List[int] = []
+        for i in range(n):
+            seg = segment_paths[(start_index + i) % n]
+            if not seg:
+                return None
+            if full_path and full_path[-1] == seg[0]:
+                full_path.extend(seg[1:])
+            else:
+                full_path.extend(seg)
         return full_path
 
     # waypoint 한 번 계산 후, 시작 인덱스 0으로 전체 경로 생성
@@ -707,54 +796,64 @@ class GPSArtRouter:
             generated_route: 생성된 경로 좌표 리스트 [{"lat": ..., "lon": ...}, ...]
 
         Returns:
-            유사도 점수 (낮을수록 유사함, 평균 거리 미터 단위)
+             유사도 점수 (낮을수록 유사함, 평균 거리 미터 단위)
+
+            - drawing → route: 그림 샘플 포인트에서 경로까지 최소거리 평균
+            - route → drawing: 경로 포인트에서 그림까지 최소거리 평균
+            - 최종 점수 = (앞/뒤 평균) / 2
         """
         if not original_drawing or not generated_route:
             return float('inf')
 
-        # 생성된 경로를 (lon, lat) 튜플로 변환
-        route_coords = [(pt["lng"], pt["lat"]) for pt in generated_route] # 카카오 응답 형식
+        # 그림 좌표 (N, 2) [lon, lat]
+        drawing_arr = np.asarray(original_drawing, dtype=float)
+        if drawing_arr.shape[0] < 2:
+            return float("inf")
 
-        # 원본 그림을 세그먼트로 분할
-        original_segments = []
-        for i in range(len(original_drawing) - 1):
-            original_segments.append((original_drawing[i], original_drawing[i + 1]))
+        # 경로 좌표 (R, 2) [lon, lat] (카카오 {lat, lng} 형식)
+        route_arr = np.asarray(
+            [(pt["lng"], pt["lat"]) for pt in generated_route],
+            dtype=float,
+        )
+        if route_arr.shape[0] == 0:
+            return float("inf")
 
-        # 각 원본 세그먼트에 대해 가장 가까운 경로 점 찾기
-        total_distance = 0.0
-        segment_count = 0
+        # 그림 세그먼트 위 샘플 포인트들 (D, 2) 생성
+        n_seg = drawing_arr.shape[0] - 1 # 점의 개수 - 1 = 세그먼트 개수
+        # linspace: 0.0 ~ 1.0 사이를 n_samples + 1개의 점으로 나누어 반환
+        t = np.linspace(0.0, 1.0, self.n_samples + 1)
+        samples_list = []
+        for i in range(n_seg):
+            s = drawing_arr[i]
+            e = drawing_arr[i + 1]
+            lons = s[0] + t * (e[0] - s[0])
+            lats = s[1] + t * (e[1] - s[1])
+            # stack: 리스트의 각 배열을 가로로 쌓아서 하나의 배열로 변환
+            samples_list.append(np.stack([lons, lats], axis=1))
+        # vstack: 리스트의 각 배열을 세로로 쌓아서 하나의 배열로 변환
+        drawing_samples = np.vstack(samples_list) # (D, 2)
 
-        for i in range(len(original_segments) - 1):
-            s = original_drawing[i]
-            e = original_drawing[i + 1]
-            min_distance = float('inf')
+        draw_lons = drawing_samples[:, 0]
+        draw_lats = drawing_samples[:, 1]
+        route_lons = route_arr[:, 0]
+        route_lats = route_arr[:, 1]
 
-            # 원본 세그먼트의 중간점들 샘플링
-            for k in range(self.n_samples + 1):
-                t = k / self.n_samples
-                # 세그먼트 위의 점
-                lon = s[0] + t * (e[0] - s[0])
-                lat = s[1] + t * (e[1] - s[1])
-                orig_point = (lon, lat)
+        # 거리 행렬 (D, R) 한 번에 계싼
+        dist_DR = haversine_matrix_meters(
+            draw_lons, draw_lats,
+            route_lons, route_lats,
+        ) # shape (D, R)
 
-                # 생성된 경로에서 가장 가까운 점 찾기
-                min_point_dist = float('inf')
-                for route_point in route_coords:
-                    dist = haversine_distance(orig_point, route_point)
-                    if dist < min_point_dist:
-                        min_point_dist = dist
+        # 그림 -> 경로: 각 그림 샘플에서 가장 가까운 경로 점까지 거리 평균
+        d2r_min = dist_DR.min(axis=1) # (D,)
+        score_drawing_to_route = float(d2r_min.mean())
 
-                if min_point_dist < min_distance:
-                    min_distance = min_point_dist
+        # 경로 -> 그림: 각 경로 점에서 가장 가까운 그림 샘플까지 거리 평균
+        r2d_min = dist_DR.min(axis=0) # (R,)
+        score_route_to_drawing = float(r2d_min.mean())
 
-            total_distance += min_distance
-            segment_count += 1
-
-        # 평균 거리 반환
-        if segment_count == 0:
-            return float('inf')
-
-        return total_distance / segment_count
+        # 양방향 평균
+        return (score_drawing_to_route + score_route_to_drawing) / 2.0
 
 # 사용 예시
 if __name__ == "__main__":

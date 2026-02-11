@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
-import logging
+import logging, time
 
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
@@ -285,7 +285,7 @@ def get_route_options(
     # 옵션 목록 조회
     options = db.query(RouteOption).filter(
         RouteOption.route_id == route_id
-    ).all()
+    ).order_by(RouteOption.option_number).all()
     
     option_list = []
     for opt in options:
@@ -304,7 +304,6 @@ def get_route_options(
                 safety=getattr(opt, "safety_score", 0) or 0,
                 elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
-                sidewalk=getattr(opt, "sidewalk_score", 0) or 0,
             ),
         ))
     
@@ -754,6 +753,8 @@ def _generate_gps_art_background(task_id: str):
         task.estimated_remaining = 90
         db.commit()
 
+        _last_commit_percent = [0]
+
         def update_progress(percent: int, step: str):
             # progress 업데이트 함수
             t = db.query(RouteGenerationTask).filter(RouteGenerationTask.id == task_id).first()
@@ -766,7 +767,9 @@ def _generate_gps_art_background(task_id: str):
             if t.estimated_remaining is not None and t.estimated_remaining > 0:
                 # 아주 단순한 예: 남은 퍼센트 기반 추정
                 t.estimated_remaining = max(1, int(t.estimated_remaining * (100 - percent) / 100))
-            db.commit()
+            if percent - _last_commit_percent[0] >= 5 or percent >= 99:
+                db.commit()
+                _last_commit_percent[0] = percent
 
         logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작", task_id)
         # 중간 단계: generate_gps_art_impl 호출 시 콜백 전달
