@@ -64,6 +64,8 @@ osmnx>=1.9.0
 networkx>=3.0
 # numpy - 수치 연산
 numpy>=1.24.0
+# opencv-python - SVG path 단순화 (Douglas-Peucker 알고리즘)
+opencv-python>=4.8.0
 
 # --------------------------------------------
 # 유틸리티

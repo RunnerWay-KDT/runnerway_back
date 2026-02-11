@@ -30,6 +30,7 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 from app.services.gps_art_service import generate_gps_art_impl
+from app.utils.svg_simplify import simplify_svg_path, get_simplification_stats
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -635,7 +636,16 @@ def save_custom_drawing(
     
     try:
         print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
-        print(f"📝 [경로저장] SVG Path 길이: {len(request.svg_path)} characters")
+        print(f"📝 [경로저장] 원본 SVG Path 길이: {len(request.svg_path)} characters")
+        
+        # SVG Path 단순화 (Douglas-Peucker 알고리즘)
+        simplified_svg_path = simplify_svg_path(request.svg_path, epsilon=5.0)
+        stats = get_simplification_stats(request.svg_path, simplified_svg_path)
+        
+        print(f"✨ [경로단순화] 원본 포인트: {stats['original_points']}개")
+        print(f"✨ [경로단순화] 단순화 포인트: {stats['simplified_points']}개")
+        print(f"✨ [경로단순화] 감소율: {stats['reduction_rate']}%")
+        print(f"✨ [경로단순화] 단순화 SVG Path 길이: {len(simplified_svg_path)} characters")
         
         # Route 생성
         route = Route(
@@ -646,7 +656,7 @@ def save_custom_drawing(
             mode="none",    # 도형 그리기 (운동 모드 없음)
             start_latitude=request.location.latitude,
             start_longitude=request.location.longitude,
-            svg_path=request.svg_path,  # SVG Path 데이터 저장 (컬럼명 수정)
+            svg_path=simplified_svg_path,  # 단순화된 SVG Path 저장
             status="active"
         )
         

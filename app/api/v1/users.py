@@ -406,6 +406,7 @@ def get_my_saved_routes(
             routes_list.append({
                 "id": saved_route.id,
                 "route_id": route.id,
+                "route_option_id": saved_route.route_option_id,  # 저장된 옵션 ID 추가
                 "route_name": route.name,
                 "type": route.type,
                 "mode": route.mode,
