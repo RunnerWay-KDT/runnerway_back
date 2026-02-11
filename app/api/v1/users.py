@@ -286,12 +286,20 @@ def get_my_workouts(
     # 북마크 여부를 한 번에 조회 (N+1 방지)
     workout_route_ids = [w.route_id for w in workouts if w.route_id]
     bookmarked_route_ids = set()
+    route_svg_paths = {}
     if workout_route_ids:
         bookmarked = db.query(SavedRoute.route_id).filter(
             SavedRoute.user_id == current_user.id,
             SavedRoute.route_id.in_(workout_route_ids)
         ).all()
         bookmarked_route_ids = {r.route_id for r in bookmarked}
+        
+        # route별 svg_path 한 번에 조회 (N+1 방지)
+        routes_with_svg = db.query(Route.id, Route.svg_path).filter(
+            Route.id.in_(workout_route_ids),
+            Route.svg_path.isnot(None)
+        ).all()
+        route_svg_paths = {r.id: r.svg_path for r in routes_with_svg}
     
     workout_list = []
     for workout in workouts:
@@ -307,6 +315,7 @@ def get_my_workouts(
             calories=workout.calories,
             route_completion=float(workout.route_completion) if workout.route_completion else None,
             is_bookmarked=workout.route_id in bookmarked_route_ids if workout.route_id else False,
+            svg_path=route_svg_paths.get(workout.route_id) if workout.route_id else None,
             started_at=workout.started_at,
             completed_at=workout.completed_at
         ))
@@ -406,6 +415,7 @@ def get_my_saved_routes(
             routes_list.append({
                 "id": saved_route.id,
                 "route_id": route.id,
+                "route_option_id": saved_route.route_option_id,  # 저장된 옵션 ID 추가
                 "route_name": route.name,
                 "type": route.type,
                 "mode": route.mode,
