@@ -71,18 +71,19 @@ class WorkoutService:
         Returns:
             Workout: 생성된 운동 세션
         """
-        # 이미 진행 중인 운동 확인
-        active = self.db.query(Workout).filter(
+        # 이미 진행 중인 운동이 있으면 자동으로 취소 처리
+        active_workouts = self.db.query(Workout).filter(
             Workout.user_id == user_id,
             Workout.status.in_(["active", "paused"]),
             Workout.deleted_at.is_(None)
-        ).first()
+        ).all()
         
-        if active:
-            raise ValidationException(
-                message="이미 진행 중인 운동이 있습니다",
-                field="workout"
-            )
+        for active in active_workouts:
+            active.status = "cancelled"
+            active.deleted_at = datetime.utcnow()
+        
+        if active_workouts:
+            self.db.flush()
         
         workout = Workout(
             user_id=user_id,
