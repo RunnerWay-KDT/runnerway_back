@@ -166,6 +166,7 @@ class SavedRoute(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment='저장한 사용자 ID')
     route_id = Column(String(36), ForeignKey("routes.id"), nullable=False, comment='경로 ID')
+    route_option_id = Column(String(36), ForeignKey("route_options.id"), nullable=True, comment='경로 옵션 ID')
     
     saved_at = Column(DateTime, nullable=False, default=datetime.utcnow, comment='저장 일시')
     

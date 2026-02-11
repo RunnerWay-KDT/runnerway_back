@@ -65,10 +65,10 @@ class Settings(BaseSettings):
     # --------------------------------------------
     # JWT 토큰 설정
     # --------------------------------------------
-    # Access Token 만료 시간 (일) - 10년 (Y2038 문제 방지)
-    ACCESS_TOKEN_EXPIRE_DAYS: int = 3650
+    # Access Token 만료 시간 (일) - 365일 (1년)
+    ACCESS_TOKEN_EXPIRE_DAYS: int = 365
     
-    # Refresh Token 만료 시간 (일) - 10년 (Y2038 문제 방지)
+    # Refresh Token 만료 시간 (일) - 3650일 (약 10년, TIMESTAMP 2038 제한 고려)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 3650
     
     # JWT 알고리즘
