@@ -7,6 +7,7 @@ from app.core.exceptions import ValidationException
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 from app.utils.safety_score import calculate_safety_score
+from app.gps_art.nearby_places import get_places_ids
 
 
 def generate_gps_art_impl(
@@ -192,6 +193,7 @@ def generate_gps_art_impl(
         difficulty = _difficulty_from_elevation_metrics(total_elev, avg_grade)
         # 안전점수 계산 (DB의 cctvs, lights 테이블 기반)
         safety = calculate_safety_score(coords, db)
+        place_ids = get_places_ids(db, coords)
 
         opt = RouteOption(
             route_id=route_id,
@@ -210,6 +212,7 @@ def generate_gps_art_impl(
             max_grade=m.get("max_grade", 0) or 0,
             safety_score=safety,
             lighting_score=0,
+            place_ids=place_ids,
         )
         db.add(opt)
         db.flush()

@@ -16,7 +16,7 @@ import logging, time
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid
+from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid, Place
 from app.schemas.route import (
     RouteGenerateRequest, RouteGenerateResponse, RouteGenerateResponseWrapper,
     RouteOptionsResponse, RouteOptionsResponseWrapper,
@@ -324,6 +324,11 @@ def get_route_options(
     for opt in options:
         coords = opt.coordinates if isinstance(opt.coordinates, list) else []
         coord_schema = [{"lat": float(c.get("lat", 0)), "lng": float(c.get("lng", 0))} for c in coords]
+        place_ids = getattr(opt, "place_ids", None) or {}
+        if not isinstance(place_ids, dict):
+            place_ids = {}
+        cafe_ids = place_ids.get("cafe") or []
+        conv_ids = place_ids.get("convenience") or []
         option_list.append(RouteOptionSchema(
             id=str(opt.id),
             option_number=opt.option_number,
@@ -338,6 +343,9 @@ def get_route_options(
                 elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
             ),
+            place_ids=place_ids,
+            cafe_count=len(cafe_ids),
+            convenience_count=len(conv_ids),
         ))
     
     shape_info = None
@@ -427,8 +435,7 @@ def get_route_detail(
                 "emergency_points": []
             },
             amenities={
-                "restrooms": [],  # TODO: 주변 편의시설 조회
-                "water_fountains": [],
+                "cafes": [],  # TODO: 주변 편의시설 조회
                 "convenience_stores": []
             }
         )
@@ -1189,4 +1196,38 @@ def _generate_gps_art_background(task_id: str):
     finally:
         db.close()
     
-        
+@router.get(
+    "/{route_id}/options/{option_id}/places",
+    summary="경로 옵션 주변 장소 조회",
+)
+def get_option_places(
+    route_id: str = Path(...),
+    option_id: str = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    route = db.query(Route).filter(Route.id == route_id, Route.user_id == current_user.id).first()
+    if not route:
+        raise NotFoundException(resource="Route", resource_id=route_id)
+    option = db.query(RouteOption).filter(
+        RouteOption.id == option_id,
+        RouteOption.route_id == route_id
+    ).first()
+    if not option:
+        raise NotFoundException(resource="RouteOption", resouce_id=route_id)
+    place_ids_raw = getattr(option, "place_ids", None) or {}
+    all_ids = list((place_ids_raw.get("cafe") or []) + (place_ids_raw.get("convenience") or []))
+    if not all_ids:
+        return {"success": True, "data": {"places": []}}
+    places = db.query(Place).filter(Place.id.in_(all_ids), Place.is_active == True).all()
+    out = []
+    for p in places:
+        out.append({
+            "id": str(p.id),
+            "name": p.name or "",
+            "category": p.category or "",
+            "lat": float(p.latitude),
+            "lng": float(p.longitude),
+        })
+
+    return {"success": True, "data": {"places": out}}
