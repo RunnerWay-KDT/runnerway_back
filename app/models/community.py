@@ -67,6 +67,7 @@ class Post(Base):
     deleted_at = Column(DateTime, nullable=True, comment='Soft Delete')
     
     # ========== 관계 정의 ==========
+    author = relationship("User", foreign_keys=[author_id], lazy="select")
     likes = relationship("PostLike", back_populates="post", lazy="select")
     bookmarks = relationship("PostBookmark", back_populates="post", lazy="select")
     comments = relationship("Comment", back_populates="post", lazy="select")
@@ -141,6 +142,7 @@ class Comment(Base):
     deleted_at = Column(DateTime, nullable=True, comment='Soft Delete')
     
     # 관계 정의
+    author = relationship("User", foreign_keys=[author_id], lazy="select")
     post = relationship("Post", back_populates="comments")
     likes = relationship("CommentLike", back_populates="comment", lazy="select")
 

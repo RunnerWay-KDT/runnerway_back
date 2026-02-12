@@ -53,14 +53,24 @@ class PostSchema(BaseModel):
     """게시물 스키마 (피드용)"""
     id: Any
     author: Dict[str, Any]
-    content: Optional[str] = None
-    images: Optional[List[str]] = None
-    workout_data: Optional[Dict[str, Any]] = None
+    route_name: str = ""
+    shape_id: Optional[str] = None
+    shape_name: Optional[str] = None
+    shape_icon: Optional[str] = None
+    distance: float = 0
+    duration: int = 0
+    pace: Optional[str] = None
+    calories: Optional[int] = None
+    location: Optional[str] = None
+    caption: Optional[str] = None
     like_count: int = 0
     comment_count: int = 0
     bookmark_count: int = 0
     is_liked: bool = False
     is_bookmarked: bool = False
+    actual_path: Optional[Any] = None
+    start_latitude: Optional[float] = None
+    start_longitude: Optional[float] = None
     created_at: datetime
     
     class Config:
@@ -139,8 +149,7 @@ class PostCreateRequest(BaseModel):
 
 class PostUpdateRequest(BaseModel):
     """게시물 수정 요청 스키마"""
-    content: Optional[str] = Field(None, max_length=500, description="게시글 내용")
-    images: Optional[List[str]] = Field(None, description="이미지 URL 배열")
+    caption: Optional[str] = Field(None, max_length=500, description="캡션")
     visibility: Optional[str] = Field(None, description="공개 범위 (public/private)")
 
 

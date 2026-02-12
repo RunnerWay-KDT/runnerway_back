@@ -42,11 +42,10 @@ class CommunityService:
     
     def get_feed(
         self,
-        user_id: int = None,
+        user_id: str = None,
         page: int = 1,
         limit: int = 20,
-        sort: str = "latest",
-        post_type: str = None
+        sort: str = "latest"
     ) -> tuple[List[Post], int]:
         """
         피드 조회
@@ -56,16 +55,14 @@ class CommunityService:
             page: 페이지 번호
             limit: 페이지당 항목 수
             sort: 정렬 방식 (latest/popular/trending)
-            post_type: 게시글 타입 필터
         
         Returns:
             tuple: (게시글 목록, 전체 개수)
         """
-        query = self.db.query(Post).filter(Post.deleted_at.is_(None))
-        
-        # 타입 필터
-        if post_type and post_type != "all":
-            query = query.filter(Post.type == post_type)
+        query = self.db.query(Post).filter(
+            Post.deleted_at.is_(None),
+            Post.visibility == "public"
+        )
         
         # 정렬
         if sort == "popular":
@@ -92,31 +89,48 @@ class CommunityService:
     
     def create_post(
         self,
-        user_id: int,
-        content: str,
-        images: List[str] = None,
-        workout_id: int = None
+        user_id: str,
+        route_name: str,
+        distance: float,
+        duration: int,
+        workout_id: str = None,
+        shape_id: str = None,
+        shape_name: str = None,
+        shape_icon: str = None,
+        pace: str = None,
+        calories: int = None,
+        caption: str = None,
+        visibility: str = "public",
+        location: str = None
     ) -> Post:
         """
         게시글 작성
         
         Args:
             user_id: 작성자 ID
-            content: 게시글 내용
-            images: 이미지 URL 배열
+            route_name: 경로 이름
+            distance: 거리 (km)
+            duration: 시간 (초)
             workout_id: 연결할 운동 기록 ID
+            shape_id: 도형 ID
+            shape_name: 도형 이름
+            shape_icon: 도형 아이콘
+            pace: 평균 페이스
+            calories: 칼로리
+            caption: 캡션
+            visibility: 공개 범위
+            location: 위치
         
         Returns:
             Post: 생성된 게시글
         """
-        # 운동 기록 연결 시 데이터 조회
-        workout_data = None
+        # 운동 기록 연결 시 유효성 검증
         if workout_id:
             from app.models.workout import Workout
             workout = self.db.query(Workout).filter(
                 Workout.id == workout_id,
                 Workout.user_id == user_id,
-                Workout.status == "completed"
+                Workout.deleted_at.is_(None)
             ).first()
             
             if not workout:
@@ -125,22 +139,31 @@ class CommunityService:
                     field="workout_id"
                 )
             
-            workout_data = {
-                "type": workout.type,
-                "distance": float(workout.distance) if workout.distance else None,
-                "duration": workout.duration,
-                "route_name": workout.route_name
-            }
+            # 이미 공유된 운동인지 확인
+            existing_post = self.db.query(Post).filter(
+                Post.workout_id == workout_id,
+                Post.deleted_at.is_(None)
+            ).first()
+            if existing_post:
+                raise ValidationException(
+                    message="이미 공유된 운동 기록입니다",
+                    field="workout_id"
+                )
         
         post = Post(
-            user_id=user_id,
-            content=content,
-            images=images,
+            author_id=user_id,
             workout_id=workout_id,
-            type=workout_data.get("type") if workout_data else None,
-            distance=workout_data.get("distance") if workout_data else None,
-            duration=workout_data.get("duration") if workout_data else None,
-            route_shape=workout_data.get("route_name") if workout_data else None
+            route_name=route_name,
+            shape_id=shape_id,
+            shape_name=shape_name,
+            shape_icon=shape_icon,
+            distance=distance,
+            duration=duration,
+            pace=pace,
+            calories=calories,
+            caption=caption,
+            visibility=visibility,
+            location=location
         )
         
         self.db.add(post)
@@ -150,7 +173,7 @@ class CommunityService:
         return post
     
     
-    def get_post(self, post_id: int) -> Optional[Post]:
+    def get_post(self, post_id: str) -> Optional[Post]:
         """
         게시글 상세 조회
         
@@ -168,10 +191,10 @@ class CommunityService:
     
     def update_post(
         self,
-        post_id: int,
-        user_id: int,
-        content: str = None,
-        images: List[str] = None
+        post_id: str,
+        user_id: str,
+        caption: str = None,
+        visibility: str = None
     ) -> Post:
         """
         게시글 수정
@@ -179,18 +202,18 @@ class CommunityService:
         Args:
             post_id: 게시글 ID
             user_id: 사용자 ID
-            content: 수정할 내용
-            images: 수정할 이미지
+            caption: 수정할 캡션
+            visibility: 수정할 공개 범위
         
         Returns:
             Post: 수정된 게시글
         """
         post = self._get_post_with_permission(post_id, user_id)
         
-        if content is not None:
-            post.content = content
-        if images is not None:
-            post.images = images
+        if caption is not None:
+            post.caption = caption
+        if visibility is not None:
+            post.visibility = visibility
         
         post.updated_at = datetime.utcnow()
         self.db.commit()
@@ -198,7 +221,7 @@ class CommunityService:
         return post
     
     
-    def delete_post(self, post_id: int, user_id: int) -> bool:
+    def delete_post(self, post_id: str, user_id: str) -> bool:
         """
         게시글 삭제 (Soft Delete)
         
@@ -220,7 +243,7 @@ class CommunityService:
     # 좋아요 관련
     # ============================================
     
-    def like_post(self, post_id: int, user_id: int) -> int:
+    def like_post(self, post_id: str, user_id: str) -> int:
         """
         게시글 좋아요
         
@@ -253,7 +276,7 @@ class CommunityService:
         return post.like_count
     
     
-    def unlike_post(self, post_id: int, user_id: int) -> int:
+    def unlike_post(self, post_id: str, user_id: str) -> int:
         """
         게시글 좋아요 취소
         
@@ -286,7 +309,7 @@ class CommunityService:
         return post.like_count
     
     
-    def is_liked(self, post_id: int, user_id: int) -> bool:
+    def is_liked(self, post_id: str, user_id: str) -> bool:
         """좋아요 여부 확인"""
         return self.db.query(PostLike).filter(
             PostLike.post_id == post_id,
@@ -298,7 +321,7 @@ class CommunityService:
     # 북마크 관련
     # ============================================
     
-    def bookmark_post(self, post_id: int, user_id: int) -> bool:
+    def bookmark_post(self, post_id: str, user_id: str) -> bool:
         """
         게시글 북마크
         
@@ -331,7 +354,7 @@ class CommunityService:
         return True
     
     
-    def unbookmark_post(self, post_id: int, user_id: int) -> bool:
+    def unbookmark_post(self, post_id: str, user_id: str) -> bool:
         """게시글 북마크 취소"""
         bookmark = self.db.query(PostBookmark).filter(
             PostBookmark.post_id == post_id,
@@ -355,7 +378,7 @@ class CommunityService:
         return True
     
     
-    def is_bookmarked(self, post_id: int, user_id: int) -> bool:
+    def is_bookmarked(self, post_id: str, user_id: str) -> bool:
         """북마크 여부 확인"""
         return self.db.query(PostBookmark).filter(
             PostBookmark.post_id == post_id,
@@ -365,7 +388,7 @@ class CommunityService:
     
     def get_bookmarked_posts(
         self,
-        user_id: int,
+        user_id: str,
         page: int = 1,
         limit: int = 20
     ) -> tuple[List[Post], int]:
@@ -393,10 +416,9 @@ class CommunityService:
     
     def create_comment(
         self,
-        post_id: int,
-        user_id: int,
-        content: str,
-        parent_id: int = None
+        post_id: str,
+        user_id: str,
+        content: str
     ) -> Comment:
         """
         댓글 작성
@@ -405,44 +427,27 @@ class CommunityService:
             post_id: 게시글 ID
             user_id: 작성자 ID
             content: 댓글 내용
-            parent_id: 부모 댓글 ID (답글인 경우)
         
         Returns:
             Comment: 생성된 댓글
         """
         post = self._get_post(post_id)
         
-        # 부모 댓글 확인 (답글인 경우)
-        if parent_id:
-            parent = self.db.query(Comment).filter(
-                Comment.id == parent_id,
-                Comment.deleted_at.is_(None)
-            ).first()
-            
-            if not parent:
-                raise NotFoundException(
-                    resource="Comment",
-                    resource_id=parent_id
-                )
-            
-            parent.reply_count += 1
-        
         comment = Comment(
             post_id=post_id,
-            user_id=user_id,
-            parent_id=parent_id,
+            author_id=user_id,
             content=content
         )
         
         self.db.add(comment)
-        post.comment_count += 1
+        post.comment_count = (post.comment_count or 0) + 1
         self.db.commit()
         self.db.refresh(comment)
         
         return comment
     
     
-    def delete_comment(self, comment_id: int, user_id: int) -> bool:
+    def delete_comment(self, comment_id: str, user_id: str) -> bool:
         """
         댓글 삭제
         
@@ -464,23 +469,15 @@ class CommunityService:
                 resource_id=comment_id
             )
         
-        if comment.user_id != user_id:
+        if comment.author_id != user_id:
             raise ForbiddenException(message="삭제 권한이 없습니다")
         
         comment.deleted_at = datetime.utcnow()
         
         # 게시글 댓글 수 감소
         post = self.db.query(Post).filter(Post.id == comment.post_id).first()
-        if post and post.comment_count > 0:
+        if post and post.comment_count and post.comment_count > 0:
             post.comment_count -= 1
-        
-        # 부모 댓글 답글 수 감소
-        if comment.parent_id:
-            parent = self.db.query(Comment).filter(
-                Comment.id == comment.parent_id
-            ).first()
-            if parent and parent.reply_count > 0:
-                parent.reply_count -= 1
         
         self.db.commit()
         
@@ -489,10 +486,9 @@ class CommunityService:
     
     def get_comments(
         self,
-        post_id: int,
+        post_id: str,
         page: int = 1,
-        limit: int = 20,
-        parent_id: int = None
+        limit: int = 20
     ) -> tuple[List[Comment], int]:
         """
         댓글 목록 조회
@@ -501,7 +497,6 @@ class CommunityService:
             post_id: 게시글 ID
             page: 페이지 번호
             limit: 페이지당 항목 수
-            parent_id: 부모 댓글 ID (답글 조회 시)
         
         Returns:
             tuple: (댓글 목록, 전체 개수)
@@ -510,11 +505,6 @@ class CommunityService:
             Comment.post_id == post_id,
             Comment.deleted_at.is_(None)
         )
-        
-        if parent_id is None:
-            query = query.filter(Comment.parent_id.is_(None))
-        else:
-            query = query.filter(Comment.parent_id == parent_id)
         
         query = query.order_by(Comment.created_at.desc())
         
@@ -530,7 +520,7 @@ class CommunityService:
     # 헬퍼 메서드
     # ============================================
     
-    def _get_post(self, post_id: int) -> Post:
+    def _get_post(self, post_id: str) -> Post:
         """게시글 조회 (내부용)"""
         post = self.db.query(Post).filter(
             Post.id == post_id,
@@ -546,11 +536,11 @@ class CommunityService:
         return post
     
     
-    def _get_post_with_permission(self, post_id: int, user_id: int) -> Post:
+    def _get_post_with_permission(self, post_id: str, user_id: str) -> Post:
         """게시글 조회 + 권한 확인 (내부용)"""
         post = self._get_post(post_id)
         
-        if post.user_id != user_id:
+        if post.author_id != user_id:
             raise ForbiddenException(message="권한이 없습니다")
         
         return post

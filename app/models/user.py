@@ -93,9 +93,23 @@ class UserSettings(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid, comment='UUID')
     user_id = Column(String(36), ForeignKey("users.id"), unique=True, nullable=False, comment='사용자 ID')
     
+    # ========== 일반 설정 ==========
+    dark_mode = Column(Boolean, default=True, comment='다크 모드')
+    language = Column(String(10), default='ko', comment='언어 설정')
+    
+    # ========== 알림 설정 ==========
+    push_enabled = Column(Boolean, default=True, comment='푸시 알림 활성화')
+    workout_reminder = Column(Boolean, default=True, comment='운동 시작 알림')
+    goal_achievement = Column(Boolean, default=True, comment='목표 달성 알림')
+    community_activity = Column(Boolean, default=False, comment='커뮤니티 활동 알림')
+    
+    # ========== 운동 설정 ==========
+    auto_lap = Column(Boolean, default=False, comment='자동 랩')
+    
     # ========== 안전 설정 ==========
     night_safety_mode = Column(Boolean, default=True, comment='야간 안전 모드')
     auto_night_mode = Column(Boolean, default=True, comment='자동 야간 모드')
+    share_location = Column(Boolean, default=False, comment='위치 공유')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
