@@ -872,6 +872,48 @@ def like_comment(
 
 
 # ============================================
+# 댓글 좋아요 취소
+# ============================================
+@router.delete(
+    "/comments/{comment_id}/like",
+    response_model=CommonResponse,
+    summary="댓글 좋아요 취소",
+    description="댓글 좋아요를 취소합니다."
+)
+def unlike_comment(
+    comment_id: str = Path(..., description="댓글 ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """댓글 좋아요 취소 엔드포인트"""
+    
+    like = db.query(CommentLike).filter(
+        CommentLike.comment_id == comment_id,
+        CommentLike.user_id == current_user.id
+    ).first()
+    
+    if not like:
+        raise NotFoundException(
+            resource="CommentLike",
+            resource_id=comment_id
+        )
+    
+    db.delete(like)
+    
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if comment and comment.like_count > 0:
+        comment.like_count -= 1
+    
+    db.commit()
+    
+    return CommonResponse(
+        success=True,
+        message="좋아요가 취소되었습니다",
+        data={"like_count": comment.like_count if comment else 0}
+    )
+
+
+# ============================================
 # 내 북마크 목록
 # ============================================
 @router.get(
