@@ -305,11 +305,23 @@ def get_route_options(
     
     # 경로 조회 (옵션과 함께 로드 -> N+1 문제 해결)
     route = db.query(Route).options(joinedload(Route.options)).filter(
-        Route.id == route_id,
-        Route.user_id == current_user.id
+        Route.id == route_id
     ).first()
     
     if not route:
+        raise NotFoundException(
+            resource="Route",
+            resource_id=route_id
+        )
+    
+    # 권한 확인: 본인 경로 OR 저장된 경로
+    is_owner = route.user_id == current_user.id
+    is_saved = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id,
+        SavedRoute.route_id == route_id
+    ).first() is not None
+    
+    if not is_owner and not is_saved:
         raise NotFoundException(
             resource="Route",
             resource_id=route_id
@@ -398,6 +410,19 @@ def get_route_detail(
         )
     
     route = option.route
+    
+    # 권한 확인: 본인 경로 OR 저장된 경로
+    is_owner = route.user_id == current_user.id
+    is_saved = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id,
+        SavedRoute.route_id == str(route_id)
+    ).first() is not None
+    
+    if not is_owner and not is_saved:
+        raise NotFoundException(
+            resource="RouteOption",
+            resource_id=option_id
+        )
     
     # 경로 좌표 변환
     path_points = []
