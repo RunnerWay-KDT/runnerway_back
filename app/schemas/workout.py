@@ -159,6 +159,7 @@ class WorkoutSummarySchema(BaseModel):
     calories: Optional[int] = None
     route_completion: Optional[float] = None
     is_bookmarked: bool = False
+    svg_path: Optional[str] = None
     started_at: datetime
     completed_at: Optional[datetime] = None
     

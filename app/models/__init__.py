@@ -47,6 +47,10 @@ from app.models.community import (
     Comment,
     CommentLike
 )
+from app.models.safety import (
+    Cctv,
+    Light
+)
 
 # 외부에서 import할 수 있는 모델 목록
 __all__ = [
@@ -72,4 +76,7 @@ __all__ = [
     "PostBookmark",
     "Comment",
     "CommentLike",
+    # Safety 인프라 관련
+    "Cctv",
+    "Light",
 ]

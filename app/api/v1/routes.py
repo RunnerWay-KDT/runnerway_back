@@ -34,6 +34,7 @@ from app.core.exceptions import NotFoundException, ValidationException, External
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 from app.services.gps_art_service import generate_gps_art_impl
+
 import osmnx as ox
 import networkx as nx
 import logging
@@ -49,6 +50,8 @@ logger = logging.getLogger(__name__)
 # OSMnx 설정
 ox.settings.use_cache = True
 ox.settings.log_console = False
+
+from app.utils.svg_simplify import simplify_svg_path, get_simplification_stats
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/routes", tags=["Routes"])
@@ -191,7 +194,7 @@ async def generate_route_background(task_id: str, db: Session):
                 option_type=option_type,
                 distance=task.target_distance + (i * 0.1),  # 약간씩 다른 거리
                 estimated_time=int(task.target_distance * 10),  # 분 단위
-                safety_score=90 - (i * 5),  # 안전도 점수
+                safety_score=0,
                 elevation_gain=50 + (i * 10),  # 고도 상승
                 path_data={
                     "coordinates": [],  # TODO: 실제 좌표 데이터
@@ -613,7 +616,6 @@ def recommend_waypoints(
             "lat": lat + 0.005,
             "lng": lng + 0.005,
             "type": "park",
-            "safety_score": 85,
             "description": "산책하기 좋은 공원입니다"
         },
         {
@@ -622,7 +624,6 @@ def recommend_waypoints(
             "lat": lat - 0.003,
             "lng": lng + 0.007,
             "type": "riverside",
-            "safety_score": 90,
             "description": "경치가 좋은 한강 둔치입니다"
         }
     ]
@@ -682,6 +683,18 @@ async def recommend_route(
     try:
         # 1. RoadNetworkFetcher 초기화
         fetcher = RoadNetworkFetcher()
+
+        print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
+        print(f"📝 [경로저장] 원본 SVG Path 길이: {len(request.svg_path)} characters")
+        
+        # SVG Path 단순화 (Douglas-Peucker 알고리즘)
+        simplified_svg_path = simplify_svg_path(request.svg_path, epsilon=5.0)
+        stats = get_simplification_stats(request.svg_path, simplified_svg_path)
+        
+        print(f"✨ [경로단순화] 원본 포인트: {stats['original_points']}개")
+        print(f"✨ [경로단순화] 단순화 포인트: {stats['simplified_points']}개")
+        print(f"✨ [경로단순화] 감소율: {stats['reduction_rate']}%")
+        print(f"✨ [경로단순화] 단순화 SVG Path 길이: {len(simplified_svg_path)} characters")
         
         # 2. 먼저 페이스 계산하여 target_dist_km 결정
         # 컨디션별 페이스 설정 (분/km) - 10km 최대 제한에 맞춰 조정
@@ -922,6 +935,7 @@ async def recommend_route(
             start_longitude=user_location[1],
             condition=condition,
             safety_mode=False,      # 기본값
+            svg_path=simplified_svg_path,  # 단순화된 SVG Path 저장
             status="active"
         )
         db.add(new_route)
