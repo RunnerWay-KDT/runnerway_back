@@ -430,6 +430,7 @@ def save_route(
     
     # route_option_id가 제공된 경우 해당 옵션이 존재하는지 확인
     route_option_id = request.route_option_id if request else None
+    custom_name = request.name if request else None
     if route_option_id:
         from app.models.route import RouteOption
         option = db.query(RouteOption).filter(
@@ -441,6 +442,10 @@ def save_route(
                 resource="RouteOption",
                 resource_id=route_option_id
             )
+        # 사용자가 이름을 수정한 경우 route_options.name 업데이트
+        if custom_name and custom_name.strip():
+            option.name = custom_name.strip()
+            db.commit()
     
     # 이미 저장했는지 확인
     existing = db.query(SavedRoute).filter(

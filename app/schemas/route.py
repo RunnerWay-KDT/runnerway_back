@@ -273,8 +273,8 @@ class SavedRouteSchema(BaseModel):
 
 class SaveRouteRequest(BaseModel):
     """경로 저장 요청 스키마"""
-    route_id: str = Field(..., description="저장할 경로 ID")
     route_option_id: Optional[str] = Field(None, description="저장할 경로 옵션 ID")
+    name: Optional[str] = Field(None, description="사용자가 수정한 경로 이름 (route_options.name 업데이트용)")
 
 
 # API 호환을 위한 alias
