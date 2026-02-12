@@ -162,7 +162,7 @@ async def generate_route_background(task_id: str, db: Session):
                 option_type=option_type,
                 distance=task.target_distance + (i * 0.1),  # 약간씩 다른 거리
                 estimated_time=int(task.target_distance * 10),  # 분 단위
-                safety_score=90 - (i * 5),  # 안전도 점수
+                safety_score=0,
                 elevation_gain=50 + (i * 10),  # 고도 상승
                 path_data={
                     "coordinates": [],  # TODO: 실제 좌표 데이터
@@ -584,7 +584,6 @@ def recommend_waypoints(
             "lat": lat + 0.005,
             "lng": lng + 0.005,
             "type": "park",
-            "safety_score": 85,
             "description": "산책하기 좋은 공원입니다"
         },
         {
@@ -593,7 +592,6 @@ def recommend_waypoints(
             "lat": lat - 0.003,
             "lng": lng + 0.007,
             "type": "riverside",
-            "safety_score": 90,
             "description": "경치가 좋은 한강 둔치입니다"
         }
     ]

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import ValidationException
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
+from app.utils.safety_score import calculate_safety_score
 
 
 def generate_gps_art_impl(
@@ -180,6 +181,10 @@ def generate_gps_art_impl(
         coords = r.get("coordinates", [])
         distance_km = float(r.get("distance_km", 0))
         difficulty = difficulty_by_idx[i]
+
+        # 안전점수 계산 (DB의 cctvs, lights 테이블 기반)
+        safety = calculate_safety_score(coords, db)
+
         opt = RouteOption(
             route_id=route_id,
             option_number=i + 1,
@@ -189,7 +194,7 @@ def generate_gps_art_impl(
             difficulty=difficulty,
             tag=tags[i],
             coordinates=coords,
-            safety_score=90 - i * 3,
+            safety_score=safety,
             max_elevation_diff=0,
             lighting_score=0,
         )
