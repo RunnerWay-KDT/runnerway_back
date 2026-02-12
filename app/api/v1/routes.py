@@ -1146,7 +1146,7 @@ def _generate_gps_art_background(task_id: str):
                 db.commit()
                 _last_commit_percent[0] = percent
 
-        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작", task_id)
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작 %s", task_id)
         # 중간 단계: generate_gps_art_impl 호출 시 콜백 전달
         result = generate_gps_art_impl(
             body=task.request_data, 
@@ -1155,7 +1155,7 @@ def _generate_gps_art_background(task_id: str):
             on_progress=update_progress, # 진행 상태 콜백 전달
         )
 
-        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료", task_id)
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료 %s", task_id)
 
         task.status = "completed"
         task.progress = 100

@@ -167,19 +167,28 @@ def generate_gps_art_impl(
     tags = ["BEST", "추천", None]
     option_ids: List[str] = []
 
-    routes_list = result["routes"]
-    distances_with_idx = [(i, float(r.get("distance_km", 0))) for i, r in enumerate(routes_list)]
-    distances_with_idx.sort(key=lambda x: x[1])
-    difficulty_by_idx = {
-        distances_with_idx[0][0]: "짧은 코스",
-        distances_with_idx[1][0]: "보통",
-        distances_with_idx[2][0]: "긴 코스",
-    }
+    def _difficulty_from_elevation_metrics(total_elevation_change: float, average_grade: float) -> str:
+        """total_elevation_change(m), average_grade(%) 로 쉬움/보통/도전 결정."""
+        if average_grade < 3.0:
+            base = "쉬움"
+        elif average_grade < 7.0:
+            base = "보통"
+        else:
+            base = "도전"
+        # 고도 변화가 크면 한 단계 상향 (선택)
+        if total_elevation_change >= 200 and base == "쉬움":
+            return "보통"
+        if total_elevation_change >= 350 and base == "보통":
+            return "도전"
+        return base
 
     for i, r in enumerate(result["routes"]):
         coords = r.get("coordinates", [])
         distance_km = float(r.get("distance_km", 0))
-        difficulty = difficulty_by_idx[i]
+        m = r.get("gps_art_metrics") or {}
+        total_elev = float(m.get("total_elevation_change", 0) or 0)
+        avg_grade = float(m.get("average_grade", 0) or 0)
+        difficulty = _difficulty_from_elevation_metrics(total_elev, avg_grade)
         opt = RouteOption(
             route_id=route_id,
             option_number=i + 1,
@@ -190,7 +199,12 @@ def generate_gps_art_impl(
             tag=tags[i],
             coordinates=coords,
             safety_score=90 - i * 3,
-            max_elevation_diff=0,
+            max_elevation_diff=m.get("max_elevation_diff", 0) or 0,
+            total_ascent=m.get("total_ascent", 0) or 0,
+            total_descent=m.get("total_descent", 0) or 0,
+            total_elevation_change=total_elev,
+            average_grade=avg_grade,
+            max_grade=m.get("max_grade", 0) or 0,
             lighting_score=0,
         )
         db.add(opt)
