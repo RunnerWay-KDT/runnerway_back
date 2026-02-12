@@ -28,7 +28,7 @@ engine = create_engine(
     settings.DATABASE_URL,
     pool_pre_ping=True,      # 연결 상태 확인
     pool_recycle=3600,       # 1시간마다 연결 갱신
-    echo=settings.DEBUG      # 디버그 모드에서만 SQL 출력
+    echo=False               # SQL 로그 비활성화
 )
 
 
@@ -93,29 +93,3 @@ def get_db() -> Generator[Session, None, None]:
         # API 처리가 끝나면 세션 종료
         # 예외가 발생해도 반드시 실행됩니다
         db.close()
-
-
-def create_tables():
-    """
-    데이터베이스 테이블을 생성합니다.
-    
-    이 함수는 서버 시작 시 한 번 호출됩니다.
-    Base를 상속받은 모든 모델의 테이블이 생성됩니다.
-    이미 존재하는 테이블은 건드리지 않습니다.
-    
-    [신입 개발자를 위한 팁]
-    - checkfirst=True: 테이블이 이미 존재하면 생성하지 않음
-    - 이 함수는 개발 환경에서만 사용하는 것을 권장합니다.
-    - 프로덕션에서는 Alembic 같은 마이그레이션 도구를 사용하세요.
-    
-    주의사항:
-        이 함수를 호출하기 전에 모든 모델 파일이 import 되어야 합니다!
-        그래야 Base.metadata에 모든 테이블 정보가 등록됩니다.
-    """
-    # 모든 모델을 import (테이블 정보 등록)
-    # 중요: 이 import가 없으면 테이블이 생성되지 않습니다!
-    from app.models import user, route, workout, community
-    
-    # 테이블 생성
-    Base.metadata.create_all(bind=engine, checkfirst=True)
-    print("📊 데이터베이스 테이블이 생성되었습니다.")

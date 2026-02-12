@@ -6,7 +6,7 @@
 # ============================================
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 
 
@@ -36,10 +36,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-super-secret-key-change-this-in-production"
     
     # CORS 허용 도메인 (프론트엔드 주소)
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:19006"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:19006,http://localhost:8081"
     
     # API 버전 프리픽스
     API_V1_PREFIX: str = "/api/v1"
+    
+    # OSMnx 캐시 디렉토리
+    OSMNX_CACHE_DIR: str = "cache/osmnx"
     
     # --------------------------------------------
     # 데이터베이스 설정
@@ -89,6 +92,10 @@ class Settings(BaseSettings):
     # 로그 레벨
     LOG_LEVEL: str = "DEBUG"
     
+    # DEM 파일 경로 (선택적)
+    DEM_FILE_PATH: Optional[str] = None
+
+    
     @property
     def DATABASE_URL(self) -> str:
         """
@@ -127,6 +134,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"
 
 
 @lru_cache()
