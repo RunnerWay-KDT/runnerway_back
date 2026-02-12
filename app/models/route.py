@@ -130,7 +130,6 @@ class RouteOption(Base):
     
     # ========== 점수/특성 ==========
     safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
-    safety_score = Column(Integer, default=0, comment='안전도 (0-100)')
     
     # 고도 통계
     max_elevation_diff = Column(Integer, default=0, comment='최대 고도차 (최고점-최저점, m)')
@@ -148,6 +147,8 @@ class RouteOption(Base):
     # 경로 복잡도
     segment_count = Column(Integer, default=0, comment='경로 세그먼트(선분) 수')
     turn_count = Column(Integer, default=0, comment='방향 전환 횟수')
+
+    place_ids = Column(JSON, nullable=True, comment='경로 주변 장소 ID 목록 (cafe/convenience)')
     
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     

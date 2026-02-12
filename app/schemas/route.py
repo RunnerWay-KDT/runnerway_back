@@ -208,7 +208,17 @@ class RouteOptionSchema(BaseModel):
     tag: Optional[str] = Field(None, description="태그 (추천/BEST)")
     coordinates: List[CoordinateSchema] = Field(..., description="경로 좌표 배열")
     scores: RouteScoresSchema = Field(..., description="경로 점수")
-
+    # 고도/경사 (GPS Art 등)
+    max_elevation_diff: Optional[int] = Field(0, description="최대 고도차 (m)")
+    total_ascent: Optional[float] = Field(0, description="총 상승 고도 (m)")
+    total_descent: Optional[float] = Field(0, description="총 하강 고도 (m)")
+    total_elevation_change: Optional[float] = Field(0, description="총 고도 변화량 (m)")
+    average_grade: Optional[float] = Field(0, description="평균 경사도 (%)")
+    max_grade: Optional[float] = Field(0, description="최대 경사도 (%)")
+    # 편의 시설
+    place_ids: Optional[Dict[str, List[str]]] = Field(None, description="경로 주변 장소 ID 목록 (cafe/convenience)")
+    cafe_count: Optional[int] = Field(0, description="카페 개수")
+    convenience_count: Optional[int] = Field(0, description="편의점 개수")
 
 class RouteOptionsResponse(BaseModel):
     """경로 옵션 조회 응답 스키마"""

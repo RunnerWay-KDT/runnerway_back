@@ -16,7 +16,7 @@ import logging, time
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid
+from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid, Place
 from app.schemas.route import (
     RouteGenerateRequest, RouteGenerateResponse, RouteGenerateResponseWrapper,
     RouteOptionsResponse, RouteOptionsResponseWrapper,
@@ -336,6 +336,11 @@ def get_route_options(
     for opt in options:
         coords = opt.coordinates if isinstance(opt.coordinates, list) else []
         coord_schema = [{"lat": float(c.get("lat", 0)), "lng": float(c.get("lng", 0))} for c in coords]
+        place_ids = getattr(opt, "place_ids", None) or {}
+        if not isinstance(place_ids, dict):
+            place_ids = {}
+        cafe_ids = place_ids.get("cafe") or []
+        conv_ids = place_ids.get("convenience") or []
         option_list.append(RouteOptionSchema(
             id=str(opt.id),
             option_number=opt.option_number,
@@ -350,6 +355,9 @@ def get_route_options(
                 elevation=getattr(opt, "max_elevation_diff", 0) or 0,
                 lighting=getattr(opt, "lighting_score", 0) or 0,
             ),
+            place_ids=place_ids,
+            cafe_count=len(cafe_ids),
+            convenience_count=len(conv_ids),
         ))
     
     shape_info = None
@@ -452,8 +460,7 @@ def get_route_detail(
                 "emergency_points": []
             },
             amenities={
-                "restrooms": [],  # TODO: 주변 편의시설 조회
-                "water_fountains": [],
+                "cafes": [],  # TODO: 주변 편의시설 조회
                 "convenience_stores": []
             }
         )
@@ -709,7 +716,6 @@ def recommend_waypoints(
         "data": {"waypoints": recommended},
         "message": "경유지 추천 완료"
     }
-
 
 # ============================================
 # 경로 추천 (Server.py 로직 이관)
@@ -1151,6 +1157,96 @@ async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Sess
 
 
 # ============================================
+# 커스텀 그림 경로 저장
+# ============================================
+@router.post(
+    "/custom-drawing",
+    response_model=SaveCustomDrawingResponseWrapper,
+    status_code=status.HTTP_201_CREATED,
+    summary="커스텀 그림 경로 저장",
+    description="""
+    사용자가 직접 그린 경로를 SVG Path 형태로 저장합니다.
+    
+    **저장 정보:**
+    - SVG Path 데이터
+    - 시작 위치 (위도, 경도)
+    - 예상 거리
+    - 경로 이름
+    
+    **반환 데이터:**
+    - route_id: 생성된 경로 ID
+    - 저장된 경로 정보
+    """
+)
+def save_custom_drawing(
+    request: SaveCustomDrawingRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """커스텀 그림 경로 저장 엔드포인트"""
+
+    try:
+        print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
+        print(f"📝 [경로저장] 원본 SVG Path 길이: {len(request.svg_path)} characters")
+
+        # SVG Path 단순화 (Douglas-Peucker 알고리즘)
+        simplified_svg_path = simplify_svg_path(request.svg_path, epsilon=5.0)
+        stats = get_simplification_stats(request.svg_path, simplified_svg_path)
+
+        print(f"✨ [경로단순화] 원본 포인트: {stats['original_points']}개")
+        print(f"✨ [경로단순화] 단순화 포인트: {stats['simplified_points']}개")
+        print(f"✨ [경로단순화] 감소율: {stats['reduction_rate']}%")
+        print(f"✨ [경로단순화] 단순화 SVG Path 길이: {len(simplified_svg_path)} characters")
+
+        # Route 생성
+        route = Route(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            name=request.name,
+            type="custom",  # 커스텀 그리기
+            mode="none",    # 도형 그리기 (운동 모드 없음)
+            start_latitude=request.location.latitude,
+            start_longitude=request.location.longitude,
+            svg_path=simplified_svg_path,  # 단순화된 SVG Path 저장
+            status="active"
+        )
+
+        print(f"✅ [경로저장] Route 객체 생성 완료: id={route.id}")
+
+        db.add(route)
+        print(f"✅ [경로저장] DB에 추가 완료, commit 시도 중...")
+
+        db.commit()
+        print(f"✅ [경로저장] Commit 성공!")
+
+        db.refresh(route)
+        print(f"✅ [경로저장] Refresh 완료")
+
+        return SaveCustomDrawingResponseWrapper(
+            success=True,
+            data=SaveCustomDrawingResponse(
+                route_id=route.id,
+                name=route.name,
+                svg_path=route.svg_path,  # 컬럼명 수정
+                estimated_distance=request.estimated_distance,
+                created_at=route.created_at
+            ),
+            message="커스텀 경로가 성공적으로 저장되었습니다"
+        )
+
+    except Exception as e:
+        print(f"❌ [경로저장] 에러 발생: {type(e).__name__}")
+        print(f"❌ [경로저장] 에러 메시지: {str(e)}")
+        import traceback
+        print(f"❌ [경로저장] 스택 트레이스:\n{traceback.format_exc()}")
+
+        db.rollback()
+        raise ValidationException(
+            message=f"경로 저장 중 오류가 발생했습니다: {str(e)}",
+            field="route"
+        )
+
+# ============================================
 # GPS 아트 경로 생성 (save_custom_drawing / get_shape_templates 활용)
 # ============================================
 @router.post(
@@ -1265,4 +1361,38 @@ def _generate_gps_art_background(task_id: str):
     finally:
         db.close()
     
-        
+@router.get(
+    "/{route_id}/options/{option_id}/places",
+    summary="경로 옵션 주변 장소 조회",
+)
+def get_option_places(
+    route_id: str = Path(...),
+    option_id: str = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    route = db.query(Route).filter(Route.id == route_id, Route.user_id == current_user.id).first()
+    if not route:
+        raise NotFoundException(resource="Route", resource_id=route_id)
+    option = db.query(RouteOption).filter(
+        RouteOption.id == option_id,
+        RouteOption.route_id == route_id
+    ).first()
+    if not option:
+        raise NotFoundException(resource="RouteOption", resouce_id=route_id)
+    place_ids_raw = getattr(option, "place_ids", None) or {}
+    all_ids = list((place_ids_raw.get("cafe") or []) + (place_ids_raw.get("convenience") or []))
+    if not all_ids:
+        return {"success": True, "data": {"places": []}}
+    places = db.query(Place).filter(Place.id.in_(all_ids), Place.is_active == True).all()
+    out = []
+    for p in places:
+        out.append({
+            "id": str(p.id),
+            "name": p.name or "",
+            "category": p.category or "",
+            "lat": float(p.latitude),
+            "lng": float(p.longitude),
+        })
+
+    return {"success": True, "data": {"places": out}}
