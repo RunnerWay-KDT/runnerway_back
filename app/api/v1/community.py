@@ -16,6 +16,7 @@ from app.api.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike
 from app.models.workout import Workout
+from app.models.route import SavedRoute, RouteOption
 from app.schemas.community import (
     PostCreateRequest, PostUpdateRequest,
     PostSchema, PostDetailSchema,
@@ -602,11 +603,48 @@ def bookmark_post(
     )
     db.add(bookmark)
     post.bookmark_count += 1
+    
+    # saved_routes에도 경로 저장
+    route_id = None
+    route_option_id = None
+    
+    if post.workout_id:
+        workout = db.query(Workout).filter(Workout.id == post.workout_id).first()
+        if workout:
+            # workout에서 직접 route_id가 있는 경우
+            if workout.route_id:
+                route_id = workout.route_id
+                route_option_id = workout.route_option_id
+            # route_option_id만 있는 경우, route_option에서 route_id 찾기
+            elif workout.route_option_id:
+                route_option = db.query(RouteOption).filter(
+                    RouteOption.id == workout.route_option_id
+                ).first()
+                if route_option:
+                    route_id = route_option.route_id
+                    route_option_id = workout.route_option_id
+    
+    # route_id가 있으면 saved_routes에 저장
+    if route_id:
+        # 이미 저장된 경로인지 확인
+        existing_saved = db.query(SavedRoute).filter(
+            SavedRoute.user_id == current_user.id,
+            SavedRoute.route_id == route_id
+        ).first()
+        
+        if not existing_saved:
+            saved_route = SavedRoute(
+                user_id=current_user.id,
+                route_id=route_id,
+                route_option_id=route_option_id
+            )
+            db.add(saved_route)
+    
     db.commit()
     
     return CommonResponse(
         success=True,
-        message="북마크되었습니다"
+        message="북마크되었습니다" + (" (경로도 저장되었습니다)" if route_id else "")
     )
 
 
@@ -643,11 +681,33 @@ def unbookmark_post(
     if post and post.bookmark_count > 0:
         post.bookmark_count -= 1
     
+    # saved_routes에서도 삭제
+    route_id = None
+    if post and post.workout_id:
+        workout = db.query(Workout).filter(Workout.id == post.workout_id).first()
+        if workout:
+            if workout.route_id:
+                route_id = workout.route_id
+            elif workout.route_option_id:
+                route_option = db.query(RouteOption).filter(
+                    RouteOption.id == workout.route_option_id
+                ).first()
+                if route_option:
+                    route_id = route_option.route_id
+    
+    if route_id:
+        saved_route = db.query(SavedRoute).filter(
+            SavedRoute.user_id == current_user.id,
+            SavedRoute.route_id == route_id
+        ).first()
+        if saved_route:
+            db.delete(saved_route)
+    
     db.commit()
     
     return CommonResponse(
         success=True,
-        message="북마크가 취소되었습니다"
+        message="북마크가 취소되었습니다" + (" (저장된 경로도 삭제되었습니다)" if route_id else "")
     )
 
 
