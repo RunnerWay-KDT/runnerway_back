@@ -2,6 +2,7 @@ from typing import List, Dict, Tuple, Optional, Callable
 from .road_network import RoadNetworkFetcher
 from .gps_art_router import GPSArtRouter
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from .elevation_metrics import compute_route_elevation_metrics
 import os
 
 # 프론트에서 보내줄 그림 포인트 형식:
@@ -246,6 +247,14 @@ def generate_routes(
 
         if on_progress:
             on_progress(92, "processing")
+
+        for r in best_routes:
+            coords = r.get("coordinates") or []
+            try:
+                r["gps_art_metrics"] = compute_route_elevation_metrics(coords)
+            except Exception as e:
+                print(f"경로 {r.get('id')} 고도/경사도 메트릭 계산 실패: {e}")
+                r["gps_art_metrics"] = None
 
         # top3 각 경로에 해당 각도의 원본 path(scaled_drawing) 추가
         for item, r in zip(top3, best_routes):
