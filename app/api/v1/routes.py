@@ -305,11 +305,23 @@ def get_route_options(
     
     # 경로 조회 (옵션과 함께 로드 -> N+1 문제 해결)
     route = db.query(Route).options(joinedload(Route.options)).filter(
-        Route.id == route_id,
-        Route.user_id == current_user.id
+        Route.id == route_id
     ).first()
     
     if not route:
+        raise NotFoundException(
+            resource="Route",
+            resource_id=route_id
+        )
+    
+    # 권한 확인: 본인 경로 OR 저장된 경로
+    is_owner = route.user_id == current_user.id
+    is_saved = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id,
+        SavedRoute.route_id == route_id
+    ).first() is not None
+    
+    if not is_owner and not is_saved:
         raise NotFoundException(
             resource="Route",
             resource_id=route_id
@@ -407,6 +419,19 @@ def get_route_detail(
     
     route = option.route
     
+    # 권한 확인: 본인 경로 OR 저장된 경로
+    is_owner = route.user_id == current_user.id
+    is_saved = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id,
+        SavedRoute.route_id == str(route_id)
+    ).first() is not None
+    
+    if not is_owner and not is_saved:
+        raise NotFoundException(
+            resource="RouteOption",
+            resource_id=option_id
+        )
+    
     # 경로 좌표 변환
     path_points = []
     if option.path_data and option.path_data.get("coordinates"):
@@ -443,6 +468,51 @@ def get_route_detail(
 
 
 # ============================================
+# 경로 이름 수정
+# ============================================
+@router.patch(
+    "/{route_id}/name",
+    response_model=CommonResponse,
+    summary="경로 이름 수정",
+    description="경로(routes)의 이름을 수정합니다."
+)
+def update_route_name(
+    route_id: str = Path(..., description="경로 ID"),
+    body: dict = Body(..., example={"name": "새 경로 이름"}),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """경로 이름 수정 엔드포인트"""
+    route = db.query(Route).filter(
+        Route.id == route_id,
+        Route.user_id == current_user.id
+    ).first()
+    
+    if not route:
+        raise NotFoundException(
+            resource="Route",
+            resource_id=route_id
+        )
+    
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        raise ValidationException(
+            message="이름은 비워둘 수 없습니다",
+            field="name"
+        )
+    
+    route.name = new_name
+    route.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return CommonResponse(
+        success=True,
+        message="경로 이름이 수정되었습니다",
+        data={"route_id": route.id, "name": route.name}
+    )
+
+
+# ============================================
 # 경로 저장 (북마크)
 # ============================================
 @router.post(
@@ -469,6 +539,7 @@ def save_route(
     
     # route_option_id가 제공된 경우 해당 옵션이 존재하는지 확인
     route_option_id = request.route_option_id if request else None
+    custom_name = request.name if request else None
     if route_option_id:
         from app.models.route import RouteOption
         option = db.query(RouteOption).filter(
@@ -480,6 +551,11 @@ def save_route(
                 resource="RouteOption",
                 resource_id=route_option_id
             )
+    
+    # 사용자가 이름을 수정한 경우 routes.name 업데이트
+    if custom_name and custom_name.strip():
+        route.name = custom_name.strip()
+        db.commit()
     
     # 이미 저장했는지 확인
     existing = db.query(SavedRoute).filter(

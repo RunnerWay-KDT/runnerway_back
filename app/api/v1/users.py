@@ -286,7 +286,7 @@ def get_my_workouts(
     # 북마크 여부를 한 번에 조회 (N+1 방지)
     workout_route_ids = [w.route_id for w in workouts if w.route_id]
     bookmarked_route_ids = set()
-    route_svg_paths = {}
+    route_info_map = {}  # route_id → {name, svg_path}
     if workout_route_ids:
         bookmarked = db.query(SavedRoute.route_id).filter(
             SavedRoute.user_id == current_user.id,
@@ -294,19 +294,21 @@ def get_my_workouts(
         ).all()
         bookmarked_route_ids = {r.route_id for r in bookmarked}
         
-        # route별 svg_path 한 번에 조회 (N+1 방지)
-        routes_with_svg = db.query(Route.id, Route.svg_path).filter(
-            Route.id.in_(workout_route_ids),
-            Route.svg_path.isnot(None)
+        # route별 name, svg_path 한 번에 조회 (N+1 방지)
+        route_rows = db.query(Route.id, Route.name, Route.svg_path).filter(
+            Route.id.in_(workout_route_ids)
         ).all()
-        route_svg_paths = {r.id: r.svg_path for r in routes_with_svg}
+        route_info_map = {r.id: {"name": r.name, "svg_path": r.svg_path} for r in route_rows}
     
     workout_list = []
     for workout in workouts:
+        # routes.name을 우선 사용, 없으면 workouts.route_name 폴백
+        route_info = route_info_map.get(workout.route_id, {}) if workout.route_id else {}
+        display_name = route_info.get("name") or workout.route_name
         workout_list.append(WorkoutSummarySchema(
             id=workout.id,
             route_id=workout.route_id,
-            route_name=workout.route_name,
+            route_name=display_name,
             type=workout.type,
             mode=workout.mode,
             distance=float(workout.distance) if workout.distance else None,
@@ -315,7 +317,7 @@ def get_my_workouts(
             calories=workout.calories,
             route_completion=float(workout.route_completion) if workout.route_completion else None,
             is_bookmarked=workout.route_id in bookmarked_route_ids if workout.route_id else False,
-            svg_path=route_svg_paths.get(workout.route_id) if workout.route_id else None,
+            svg_path=route_info.get("svg_path") if workout.route_id else None,
             started_at=workout.started_at,
             completed_at=workout.completed_at
         ))
@@ -364,11 +366,17 @@ def get_my_saved_routes(
     db: Session = Depends(get_db)
 ):
     """저장한 경로 조회 엔드포인트"""
-    from app.models.route import RouteShape
+    from app.models.route import RouteShape, RouteOption
     from app.models.user import User as UserModel
+    from sqlalchemy.orm import joinedload, selectinload
     
-    # 기본 쿼리
-    query = db.query(SavedRoute).filter(
+    # joinedload로 Route, RouteShape, RouteOption을 한 번에 로드 (N+1 쿼리 방지)
+    query = db.query(SavedRoute).options(
+        joinedload(SavedRoute.route)
+        .joinedload(Route.shape),
+        joinedload(SavedRoute.route)
+        .selectinload(Route.options),
+    ).filter(
         SavedRoute.user_id == current_user.id
     )
     
@@ -378,60 +386,68 @@ def get_my_saved_routes(
     else:
         query = query.order_by(SavedRoute.saved_at.desc())
     
-    # 전체 개수
-    total_count = query.count()
+    # 전체 개수 (joinedload 전 count용 별도 쿼리)
+    total_count = db.query(SavedRoute).filter(
+        SavedRoute.user_id == current_user.id
+    ).count()
     
     # 페이지네이션
     offset = (page - 1) * limit
     saved_routes = query.offset(offset).limit(limit).all()
     
-    # 응답 데이터 변환
+    # 작성자 ID 일괄 수집 → 단일 쿼리로 조회
+    author_ids = list({sr.route.user_id for sr in saved_routes if sr.route})
+    authors_map = {}
+    if author_ids:
+        authors = db.query(UserModel).filter(UserModel.id.in_(author_ids)).all()
+        authors_map = {a.id: a.name for a in authors}
+    
+    # 응답 데이터 변환 (추가 쿼리 없음)
     routes_list = []
     for saved_route in saved_routes:
-        route = db.query(Route).filter(Route.id == saved_route.route_id).first()
-        if route:
-            # shape 정보
-            shape_data = None
-            if route.shape_id:
-                shape = db.query(RouteShape).filter(RouteShape.id == route.shape_id).first()
-                if shape:
-                    shape_data = {
-                        "shape_id": shape.id,
-                        "shape_name": shape.name,
-                        "icon_name": shape.icon_name,
-                    }
-            
-            # 작성자 정보
-            author = db.query(UserModel).filter(UserModel.id == route.user_id).first()
-            author_data = {
-                "id": route.user_id,
-                "name": author.name if author else "알 수 없음",
+        route = saved_route.route
+        if not route:
+            continue
+        
+        # shape 정보 (이미 joinedload됨)
+        shape_data = None
+        if route.shape:
+            shape_data = {
+                "shape_id": route.shape.id,
+                "shape_name": route.shape.name,
+                "icon_name": route.shape.icon_name,
             }
-            
-            # 옵션에서 거리·안전도
-            distance = float(route.options[0].distance) if route.options else 0
-            safety_score = route.options[0].safety_score if route.options else 0
-            
-            routes_list.append({
-                "id": saved_route.id,
-                "route_id": route.id,
-                "route_option_id": saved_route.route_option_id,  # 저장된 옵션 ID 추가
-                "route_name": route.name,
-                "type": route.type,
-                "mode": route.mode,
-                "distance": distance,
-                "safety_score": safety_score,
-                "shape": shape_data,
-                "svg_path": route.svg_path,  # 커스텀 경로 SVG path 데이터
-                "author": author_data,
-                "location": {
-                    "latitude": float(route.start_latitude) if route.start_latitude else 0,
-                    "longitude": float(route.start_longitude) if route.start_longitude else 0,
-                },
-                "saved_at": saved_route.saved_at.isoformat() if saved_route.saved_at else None,
-            })
+        
+        # 작성자 정보 (일괄 조회된 맵에서 가져옴)
+        author_data = {
+            "id": route.user_id,
+            "name": authors_map.get(route.user_id, "알 수 없음"),
+        }
+        
+        # 옵션에서 거리·안전도 (이미 selectinload됨)
+        distance = float(route.options[0].distance) if route.options else 0
+        safety_score = route.options[0].safety_score if route.options else 0
+        
+        routes_list.append({
+            "id": saved_route.id,
+            "route_id": route.id,
+            "route_option_id": saved_route.route_option_id,
+            "route_name": route.name,
+            "type": route.type,
+            "mode": route.mode,
+            "distance": distance,
+            "safety_score": safety_score,
+            "shape": shape_data,
+            "svg_path": route.svg_path,
+            "author": author_data,
+            "location": {
+                "latitude": float(route.start_latitude) if route.start_latitude else 0,
+                "longitude": float(route.start_longitude) if route.start_longitude else 0,
+            },
+            "saved_at": saved_route.saved_at.isoformat() if saved_route.saved_at else None,
+        })
     
-    # distance / safety 정렬은 파이썬 쪽에서 처리 (DB 조인 복잡성 회피)
+    # distance / safety 정렬은 파이썬 쪽에서 처리
     if sort == "distance_desc":
         routes_list.sort(key=lambda r: r["distance"], reverse=True)
     elif sort == "safety_desc":

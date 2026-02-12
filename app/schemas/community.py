@@ -53,14 +53,24 @@ class PostSchema(BaseModel):
     """게시물 스키마 (피드용)"""
     id: Any
     author: Dict[str, Any]
-    content: Optional[str] = None
-    images: Optional[List[str]] = None
-    workout_data: Optional[Dict[str, Any]] = None
+    route_name: str = ""
+    shape_id: Optional[str] = None
+    shape_name: Optional[str] = None
+    shape_icon: Optional[str] = None
+    distance: float = 0
+    duration: int = 0
+    pace: Optional[str] = None
+    calories: Optional[int] = None
+    location: Optional[str] = None
+    caption: Optional[str] = None
     like_count: int = 0
     comment_count: int = 0
     bookmark_count: int = 0
     is_liked: bool = False
     is_bookmarked: bool = False
+    actual_path: Optional[Any] = None
+    start_latitude: Optional[float] = None
+    start_longitude: Optional[float] = None
     created_at: datetime
     
     class Config:
@@ -124,17 +134,22 @@ class CommentUpdateRequest(BaseModel):
 class PostCreateRequest(BaseModel):
     """게시물 작성 요청 스키마 (운동 공유)"""
     workout_id: Optional[str] = Field(None, description="공유할 운동 ID")
-    content: Optional[str] = Field(None, max_length=500, description="게시글 내용")
+    route_name: str = Field(..., min_length=1, max_length=100, description="경로 이름")
+    shape_id: Optional[str] = Field(None, description="도형 ID")
+    shape_name: Optional[str] = Field(None, description="도형 이름")
+    shape_icon: Optional[str] = Field(None, description="도형 아이콘")
+    distance: float = Field(..., description="거리 (km)")
+    duration: int = Field(..., description="시간 (초)")
+    pace: Optional[str] = Field(None, description="평균 페이스")
+    calories: Optional[int] = Field(None, description="칼로리")
     caption: Optional[str] = Field(None, max_length=500, description="캡션")
-    images: Optional[List[str]] = Field(None, description="이미지 URL 배열")
     visibility: str = Field("public", description="공개 범위 (public/private)")
     location: Optional[str] = Field(None, description="위치")
 
 
 class PostUpdateRequest(BaseModel):
     """게시물 수정 요청 스키마"""
-    content: Optional[str] = Field(None, max_length=500, description="게시글 내용")
-    images: Optional[List[str]] = Field(None, description="이미지 URL 배열")
+    caption: Optional[str] = Field(None, max_length=500, description="캡션")
     visibility: Optional[str] = Field(None, description="공개 범위 (public/private)")
 
 

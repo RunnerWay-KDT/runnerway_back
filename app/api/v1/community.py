@@ -15,6 +15,8 @@ from app.db.database import get_db
 from app.api.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike
+from app.models.workout import Workout
+from app.models.route import SavedRoute, RouteOption
 from app.schemas.community import (
     PostCreateRequest, PostUpdateRequest,
     PostSchema, PostDetailSchema,
@@ -57,14 +59,11 @@ def get_feed(
 ):
     """피드 조회 엔드포인트"""
     
-    # 기본 쿼리 - 삭제되지 않은 게시글
+    # 기본 쿼리 - 삭제되지 않은 공개 게시글
     query = db.query(Post).filter(
-        Post.deleted_at.is_(None)
+        Post.deleted_at.is_(None),
+        Post.visibility == "public"
     )
-    
-    # 타입 필터
-    if type and type != "all":
-        query = query.filter(Post.type == type)
     
     # 정렬
     if sort == "popular":
@@ -106,45 +105,65 @@ def get_feed(
                 PostBookmark.user_id == current_user.id
             ).first() is not None
         
-        post_list.append(PostSchema(
-            id=post.id,
-            author={
-                "id": post.author.id,
-                "name": post.author.name,
-                "avatar_url": post.author.avatar_url
+        # 연결된 workout에서 actual_path, 시작 좌표 조회
+        actual_path = None
+        start_lat = None
+        start_lng = None
+        if post.workout_id:
+            workout = db.query(Workout).filter(
+                Workout.id == post.workout_id
+            ).first()
+            if workout:
+                actual_path = workout.actual_path
+                start_lat = float(workout.start_latitude) if workout.start_latitude else None
+                start_lng = float(workout.start_longitude) if workout.start_longitude else None
+        
+        post_data = {
+            "id": post.id,
+            "author": {
+                "id": post.author.id if post.author else None,
+                "name": post.author.name if post.author else "알 수 없음",
+                "avatar_url": post.author.avatar_url if post.author else None
             },
-            content=post.content,
-            images=post.images or [],
-            workout_data={
-                "type": post.type,
-                "distance": float(post.distance) if post.distance else None,
-                "duration": post.duration,
-                "route_shape": post.route_shape
-            } if post.type else None,
-            like_count=post.like_count,
-            comment_count=post.comment_count,
-            bookmark_count=post.bookmark_count,
-            is_liked=is_liked,
-            is_bookmarked=is_bookmarked,
-            created_at=post.created_at
-        ))
+            "route_name": post.route_name,
+            "shape_id": post.shape_id,
+            "shape_name": post.shape_name,
+            "shape_icon": post.shape_icon,
+            "distance": float(post.distance) if post.distance else 0,
+            "duration": post.duration or 0,
+            "pace": post.pace,
+            "calories": post.calories,
+            "location": post.location,
+            "caption": post.caption,
+            "like_count": post.like_count or 0,
+            "comment_count": post.comment_count or 0,
+            "bookmark_count": post.bookmark_count or 0,
+            "is_liked": is_liked,
+            "is_bookmarked": is_bookmarked,
+            "actual_path": actual_path,
+            "start_latitude": start_lat,
+            "start_longitude": start_lng,
+            "created_at": post.created_at.isoformat()
+        }
+        post_list.append(post_data)
     
     # 페이지네이션 정보
     total_pages = (total_count + limit - 1) // limit
     
-    return FeedResponseWrapper(
-        success=True,
-        data=FeedResponse(
-            posts=post_list,
-            pagination=PaginationInfo(
-                current_page=page,
-                total_pages=total_pages,
-                total_count=total_count,
-                has_next=page < total_pages,
-                has_prev=page > 1
-            )
-        )
-    )
+    return {
+        "success": True,
+        "data": {
+            "posts": post_list,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_count": total_count,
+                "has_next": page < total_pages,
+                "has_prev": page > 1
+            }
+        },
+        "message": "피드 조회 성공"
+    }
 
 
 # ============================================
@@ -173,14 +192,13 @@ def create_post(
 ):
     """게시글 작성 엔드포인트"""
     
-    # 운동 기록 연결 시 해당 운동 조회
-    workout_data = None
+    # 운동 기록 연결 시 해당 운동 유효성 검증
     if request.workout_id:
         from app.models.workout import Workout
         workout = db.query(Workout).filter(
             Workout.id == request.workout_id,
             Workout.user_id == current_user.id,
-            Workout.status == "completed"
+            Workout.deleted_at.is_(None)
         ).first()
         
         if not workout:
@@ -189,23 +207,32 @@ def create_post(
                 field="workout_id"
             )
         
-        workout_data = {
-            "type": workout.type,
-            "distance": float(workout.distance) if workout.distance else None,
-            "duration": workout.duration,
-            "route_shape": workout.shape_name
-        }
+        # 이미 공유된 운동인지 확인
+        existing_post = db.query(Post).filter(
+            Post.workout_id == request.workout_id,
+            Post.deleted_at.is_(None)
+        ).first()
+        if existing_post:
+            raise ValidationException(
+                message="이미 공유된 운동 기록입니다",
+                field="workout_id"
+            )
     
     # 게시글 생성
     post = Post(
-        user_id=current_user.id,
-        content=request.content,
-        images=request.images,
+        author_id=current_user.id,
         workout_id=request.workout_id,
-        type=workout_data.get("type") if workout_data else None,
-        distance=workout_data.get("distance") if workout_data else None,
-        duration=workout_data.get("duration") if workout_data else None,
-        route_shape=workout_data.get("route_shape") if workout_data else None
+        route_name=request.route_name,
+        shape_id=request.shape_id,
+        shape_name=request.shape_name,
+        shape_icon=request.shape_icon,
+        distance=request.distance,
+        duration=request.duration,
+        pace=request.pace,
+        calories=request.calories,
+        caption=request.caption,
+        visibility=request.visibility,
+        location=request.location,
     )
     
     db.add(post)
@@ -228,13 +255,15 @@ def create_post(
     description="게시글의 상세 정보와 댓글을 조회합니다."
 )
 def get_post_detail(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
     """게시글 상세 조회 엔드포인트"""
     
-    post = db.query(Post).filter(
+    post = db.query(Post).options(
+        joinedload(Post.author)
+    ).filter(
         Post.id == post_id,
         Post.deleted_at.is_(None)
     ).first()
@@ -260,48 +289,48 @@ def get_post_detail(
             PostBookmark.user_id == current_user.id
         ).first() is not None
     
-    # 댓글 조회 (상위 10개)
-    comments = db.query(Comment).filter(
+    # 댓글 조회
+    comments = db.query(Comment).options(
+        joinedload(Comment.author)
+    ).filter(
         Comment.post_id == post_id,
-        Comment.parent_id.is_(None),  # 최상위 댓글만
         Comment.deleted_at.is_(None)
-    ).order_by(Comment.created_at.desc()).limit(10).all()
+    ).order_by(Comment.created_at.desc()).limit(20).all()
     
     comment_list = []
     for comment in comments:
-        # 답글 조회
-        replies = db.query(Comment).filter(
-            Comment.parent_id == comment.id,
-            Comment.deleted_at.is_(None)
-        ).order_by(Comment.created_at).limit(3).all()
-        
-        reply_list = []
-        for reply in replies:
-            reply_list.append({
-                "id": reply.id,
-                "author": {
-                    "id": reply.author.id,
-                    "name": reply.author.name,
-                    "avatar_url": reply.author.avatar_url
-                },
-                "content": reply.content,
-                "like_count": reply.like_count,
-                "created_at": reply.created_at.isoformat()
-            })
+        is_comment_liked = False
+        if current_user:
+            is_comment_liked = db.query(CommentLike).filter(
+                CommentLike.comment_id == comment.id,
+                CommentLike.user_id == current_user.id
+            ).first() is not None
         
         comment_list.append({
             "id": comment.id,
             "author": {
-                "id": comment.author.id,
-                "name": comment.author.name,
-                "avatar_url": comment.author.avatar_url
+                "id": comment.author.id if comment.author else None,
+                "name": comment.author.name if comment.author else "알 수 없음",
+                "avatar_url": comment.author.avatar_url if comment.author else None
             },
             "content": comment.content,
-            "like_count": comment.like_count,
-            "reply_count": comment.reply_count,
-            "replies": reply_list,
+            "like_count": comment.like_count or 0,
+            "is_liked": is_comment_liked,
             "created_at": comment.created_at.isoformat()
         })
+    
+    # 연결된 workout에서 actual_path, 시작 좌표 조회
+    actual_path = None
+    start_lat = None
+    start_lng = None
+    if post.workout_id:
+        workout = db.query(Workout).filter(
+            Workout.id == post.workout_id
+        ).first()
+        if workout:
+            actual_path = workout.actual_path
+            start_lat = float(workout.start_latitude) if workout.start_latitude else None
+            start_lng = float(workout.start_longitude) if workout.start_longitude else None
     
     return {
         "success": True,
@@ -309,23 +338,28 @@ def get_post_detail(
             "post": {
                 "id": post.id,
                 "author": {
-                    "id": post.author.id,
-                    "name": post.author.name,
-                    "avatar_url": post.author.avatar_url
+                    "id": post.author.id if post.author else None,
+                    "name": post.author.name if post.author else "알 수 없음",
+                    "avatar_url": post.author.avatar_url if post.author else None
                 },
-                "content": post.content,
-                "images": post.images or [],
-                "workout_data": {
-                    "type": post.type,
-                    "distance": float(post.distance) if post.distance else None,
-                    "duration": post.duration,
-                    "route_shape": post.route_shape
-                } if post.type else None,
-                "like_count": post.like_count,
-                "comment_count": post.comment_count,
-                "bookmark_count": post.bookmark_count,
+                "route_name": post.route_name,
+                "shape_id": post.shape_id,
+                "shape_name": post.shape_name,
+                "shape_icon": post.shape_icon,
+                "distance": float(post.distance) if post.distance else 0,
+                "duration": post.duration or 0,
+                "pace": post.pace,
+                "calories": post.calories,
+                "location": post.location,
+                "caption": post.caption,
+                "like_count": post.like_count or 0,
+                "comment_count": post.comment_count or 0,
+                "bookmark_count": post.bookmark_count or 0,
                 "is_liked": is_liked,
                 "is_bookmarked": is_bookmarked,
+                "actual_path": actual_path,
+                "start_latitude": start_lat,
+                "start_longitude": start_lng,
                 "created_at": post.created_at.isoformat()
             },
             "comments": comment_list
@@ -343,7 +377,7 @@ def get_post_detail(
     description="작성한 게시글을 수정합니다."
 )
 def update_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     request: PostUpdateRequest = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -362,15 +396,15 @@ def update_post(
         )
     
     # 작성자 확인
-    if post.user_id != current_user.id:
+    if post.author_id != current_user.id:
         raise ForbiddenException(message="수정 권한이 없습니다")
     
     # 수정
     if request:
-        if request.content is not None:
-            post.content = request.content
-        if request.images is not None:
-            post.images = request.images
+        if request.caption is not None:
+            post.caption = request.caption
+        if request.visibility is not None:
+            post.visibility = request.visibility
     
     post.updated_at = datetime.utcnow()
     db.commit()
@@ -391,7 +425,7 @@ def update_post(
     description="작성한 게시글을 삭제합니다."
 )
 def delete_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -409,7 +443,7 @@ def delete_post(
         )
     
     # 작성자 확인
-    if post.user_id != current_user.id:
+    if post.author_id != current_user.id:
         raise ForbiddenException(message="삭제 권한이 없습니다")
     
     # Soft Delete
@@ -432,7 +466,7 @@ def delete_post(
     description="게시글에 좋아요를 누릅니다."
 )
 def like_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -489,7 +523,7 @@ def like_post(
     description="게시글 좋아요를 취소합니다."
 )
 def unlike_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -533,7 +567,7 @@ def unlike_post(
     description="게시글을 북마크합니다."
 )
 def bookmark_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -569,11 +603,48 @@ def bookmark_post(
     )
     db.add(bookmark)
     post.bookmark_count += 1
+    
+    # saved_routes에도 경로 저장
+    route_id = None
+    route_option_id = None
+    
+    if post.workout_id:
+        workout = db.query(Workout).filter(Workout.id == post.workout_id).first()
+        if workout:
+            # workout에서 직접 route_id가 있는 경우
+            if workout.route_id:
+                route_id = workout.route_id
+                route_option_id = workout.route_option_id
+            # route_option_id만 있는 경우, route_option에서 route_id 찾기
+            elif workout.route_option_id:
+                route_option = db.query(RouteOption).filter(
+                    RouteOption.id == workout.route_option_id
+                ).first()
+                if route_option:
+                    route_id = route_option.route_id
+                    route_option_id = workout.route_option_id
+    
+    # route_id가 있으면 saved_routes에 저장
+    if route_id:
+        # 이미 저장된 경로인지 확인
+        existing_saved = db.query(SavedRoute).filter(
+            SavedRoute.user_id == current_user.id,
+            SavedRoute.route_id == route_id
+        ).first()
+        
+        if not existing_saved:
+            saved_route = SavedRoute(
+                user_id=current_user.id,
+                route_id=route_id,
+                route_option_id=route_option_id
+            )
+            db.add(saved_route)
+    
     db.commit()
     
     return CommonResponse(
         success=True,
-        message="북마크되었습니다"
+        message="북마크되었습니다" + (" (경로도 저장되었습니다)" if route_id else "")
     )
 
 
@@ -587,7 +658,7 @@ def bookmark_post(
     description="게시글 북마크를 취소합니다."
 )
 def unbookmark_post(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -610,11 +681,33 @@ def unbookmark_post(
     if post and post.bookmark_count > 0:
         post.bookmark_count -= 1
     
+    # saved_routes에서도 삭제
+    route_id = None
+    if post and post.workout_id:
+        workout = db.query(Workout).filter(Workout.id == post.workout_id).first()
+        if workout:
+            if workout.route_id:
+                route_id = workout.route_id
+            elif workout.route_option_id:
+                route_option = db.query(RouteOption).filter(
+                    RouteOption.id == workout.route_option_id
+                ).first()
+                if route_option:
+                    route_id = route_option.route_id
+    
+    if route_id:
+        saved_route = db.query(SavedRoute).filter(
+            SavedRoute.user_id == current_user.id,
+            SavedRoute.route_id == route_id
+        ).first()
+        if saved_route:
+            db.delete(saved_route)
+    
     db.commit()
     
     return CommonResponse(
         success=True,
-        message="북마크가 취소되었습니다"
+        message="북마크가 취소되었습니다" + (" (저장된 경로도 삭제되었습니다)" if route_id else "")
     )
 
 
@@ -629,7 +722,7 @@ def unbookmark_post(
     description="게시글에 댓글을 작성합니다."
 )
 def create_comment(
-    post_id: int = Path(..., description="게시글 ID"),
+    post_id: str = Path(..., description="게시글 ID"),
     request: CommentCreateRequest = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -648,39 +741,31 @@ def create_comment(
             resource_id=post_id
         )
     
-    # 부모 댓글 확인 (답글인 경우)
-    if request.parent_id:
-        parent = db.query(Comment).filter(
-            Comment.id == request.parent_id,
-            Comment.deleted_at.is_(None)
-        ).first()
-        
-        if not parent:
-            raise NotFoundException(
-                resource="Comment",
-                resource_id=request.parent_id
-            )
-        
-        # 부모 댓글의 답글 수 증가
-        parent.reply_count += 1
-    
     # 댓글 생성
     comment = Comment(
         post_id=post_id,
-        user_id=current_user.id,
-        parent_id=request.parent_id,
+        author_id=current_user.id,
         content=request.content
     )
     
     db.add(comment)
-    post.comment_count += 1
+    post.comment_count = (post.comment_count or 0) + 1
     db.commit()
     db.refresh(comment)
     
     return CommonResponse(
         success=True,
         message="댓글이 작성되었습니다",
-        data={"comment_id": comment.id}
+        data={
+            "comment_id": comment.id,
+            "author": {
+                "id": current_user.id,
+                "name": current_user.name,
+                "avatar_url": current_user.avatar_url
+            },
+            "content": comment.content,
+            "created_at": comment.created_at.isoformat()
+        }
     )
 
 
@@ -694,7 +779,7 @@ def create_comment(
     description="작성한 댓글을 삭제합니다."
 )
 def delete_comment(
-    comment_id: int = Path(..., description="댓글 ID"),
+    comment_id: str = Path(..., description="댓글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -712,7 +797,7 @@ def delete_comment(
         )
     
     # 작성자 확인
-    if comment.user_id != current_user.id:
+    if comment.author_id != current_user.id:
         raise ForbiddenException(message="삭제 권한이 없습니다")
     
     # Soft Delete
@@ -720,14 +805,8 @@ def delete_comment(
     
     # 게시글 댓글 수 감소
     post = db.query(Post).filter(Post.id == comment.post_id).first()
-    if post and post.comment_count > 0:
+    if post and post.comment_count and post.comment_count > 0:
         post.comment_count -= 1
-    
-    # 부모 댓글 답글 수 감소
-    if comment.parent_id:
-        parent = db.query(Comment).filter(Comment.id == comment.parent_id).first()
-        if parent and parent.reply_count > 0:
-            parent.reply_count -= 1
     
     db.commit()
     
@@ -747,7 +826,7 @@ def delete_comment(
     description="댓글에 좋아요를 누릅니다."
 )
 def like_comment(
-    comment_id: int = Path(..., description="댓글 ID"),
+    comment_id: str = Path(..., description="댓글 ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -793,6 +872,48 @@ def like_comment(
 
 
 # ============================================
+# 댓글 좋아요 취소
+# ============================================
+@router.delete(
+    "/comments/{comment_id}/like",
+    response_model=CommonResponse,
+    summary="댓글 좋아요 취소",
+    description="댓글 좋아요를 취소합니다."
+)
+def unlike_comment(
+    comment_id: str = Path(..., description="댓글 ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """댓글 좋아요 취소 엔드포인트"""
+    
+    like = db.query(CommentLike).filter(
+        CommentLike.comment_id == comment_id,
+        CommentLike.user_id == current_user.id
+    ).first()
+    
+    if not like:
+        raise NotFoundException(
+            resource="CommentLike",
+            resource_id=comment_id
+        )
+    
+    db.delete(like)
+    
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if comment and comment.like_count > 0:
+        comment.like_count -= 1
+    
+    db.commit()
+    
+    return CommonResponse(
+        success=True,
+        message="좋아요가 취소되었습니다",
+        data={"like_count": comment.like_count if comment else 0}
+    )
+
+
+# ============================================
 # 내 북마크 목록
 # ============================================
 @router.get(
@@ -823,13 +944,15 @@ def get_my_bookmarks(
             post_list.append({
                 "id": post.id,
                 "author": {
-                    "id": post.author.id,
-                    "name": post.author.name,
-                    "avatar_url": post.author.avatar_url
+                    "id": post.author.id if post.author else None,
+                    "name": post.author.name if post.author else "알 수 없음",
+                    "avatar_url": post.author.avatar_url if post.author else None
                 },
-                "content": post.content[:100] + "..." if len(post.content) > 100 else post.content,
-                "images": post.images[:1] if post.images else [],
-                "like_count": post.like_count,
+                "route_name": post.route_name,
+                "shape_icon": post.shape_icon,
+                "distance": float(post.distance) if post.distance else 0,
+                "duration": post.duration or 0,
+                "like_count": post.like_count or 0,
                 "bookmarked_at": bookmark.created_at.isoformat()
             })
     
