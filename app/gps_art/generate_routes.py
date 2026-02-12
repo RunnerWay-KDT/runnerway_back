@@ -141,6 +141,10 @@ def generate_routes(
     """
     # 보행자 도로 그래프 로드 (시작점 기준 target_distance의 1.5배 반경)
     fetcher = RoadNetworkFetcher(timeout=30)
+
+    if on_progress:
+        on_progress(10, "processing")
+
     graph = fetcher.fetch_pedestrian_network_from_point(
         center_point=(start_lat, start_lon),
         distance=target_distance_km * 1500, # 미터 단위 변경 (1.5배)
@@ -149,7 +153,7 @@ def generate_routes(
     )
     
     if on_progress:
-        on_progress(10, "processing")
+        on_progress(30, "processing")
 
     router = GPSArtRouter(graph)
 
@@ -173,7 +177,7 @@ def generate_routes(
     )
 
     if on_progress:
-        on_progress(12, "processing")
+        on_progress(35, "processing")
 
     # 로테이션 각도 설정
     if enable_rotation:
@@ -205,7 +209,7 @@ def generate_routes(
         max_workers = min(os.cpu_count() or 4, len(tasks), 8)
 
         if on_progress:
-            on_progress(15, "processing")
+            on_progress(40, "processing")
 
         with ProcessPoolExecutor(
             max_workers=max_workers,
