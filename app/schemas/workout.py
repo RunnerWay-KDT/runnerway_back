@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 
-from app.schemas.route import CoordinateSchema
+from app.schemas.route import CoordinateSchema, PlaceBriefSchema
 
 
 # ============================================
@@ -189,6 +189,8 @@ class WorkoutTrackResponse(BaseModel):
     avg_pace: Optional[float] = None
     calories: int
     is_off_route: bool = False
+    cafes: Optional[List[PlaceBriefSchema]] = None
+    convenience_stores: Optional[List[PlaceBriefSchema]] = None
 
 
 class WorkoutTrackResponseWrapper(BaseModel):

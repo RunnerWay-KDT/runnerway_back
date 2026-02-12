@@ -16,6 +16,7 @@ from app.api.deps import get_current_user
 from app.models.user import User, UserStats
 from app.models.workout import Workout, WorkoutSplit
 from app.models.route import RouteOption
+from app.services.place_service import PlaceService
 from app.schemas.workout import (
     WorkoutStartRequest, WorkoutStartResponse, WorkoutStartResponseWrapper,
     WorkoutTrackRequest, WorkoutTrackResponse, WorkoutTrackResponseWrapper,
@@ -145,6 +146,13 @@ def track_workout(
     db: Session = Depends(get_db)
 ):
     """실시간 트래킹 엔드포인트"""
+    # 테스트용 payload 예시:
+    {
+      "timestamp": "2026-02-11T10:20:30Z",
+      "location": { "latitude": 37.498, "longitude": 127.027, "accuracy": 8.0 },
+      "metrics": { "distance": 1.42, "duration": 420, "current_pace": "4'55\"" }
+    }
+    # 응답에는 cafes/convenience_stores가 추가로 포함됩니다(500m 반경).
     
     # 운동 세션 조회
     workout = db.query(Workout).filter(
@@ -165,24 +173,24 @@ def track_workout(
         )
     
     # 좌표 데이터 저장 (path_data JSON 필드에 저장)
-    if request and request.coordinates:
+    # 현재 payload 구조: request.location + request.metrics
+    if request and request.location:
         existing_path = workout.path_data or {"coordinates": []}
-        for coord in request.coordinates:
-            existing_path["coordinates"].append({
-                "lat": coord.lat,
-                "lng": coord.lng,
-                "altitude": coord.altitude,
-                "speed": coord.speed,
-                "timestamp": (coord.timestamp or datetime.utcnow()).isoformat()
-            })
+        existing_path["coordinates"].append({
+            "lat": request.location.latitude,
+            "lng": request.location.longitude,
+            "altitude": None,
+            "speed": None,
+            "timestamp": (request.timestamp or datetime.utcnow()).isoformat()
+        })
         workout.path_data = existing_path
     
     # 운동 현황 업데이트
-    if request:
-        if request.current_distance:
-            workout.distance = request.current_distance
-        if request.current_duration:
-            workout.duration = request.current_duration
+    if request and request.metrics:
+        if request.metrics.distance is not None:
+            workout.distance = request.metrics.distance
+        if request.metrics.duration is not None:
+            workout.duration = request.metrics.duration
     
     db.commit()
     
@@ -202,6 +210,25 @@ def track_workout(
     
     # 경로 이탈 여부 체크 (TODO: 실제 구현 필요)
     is_off_route = False
+
+    cafes = None
+    convenience_stores = None
+    if request and request.location:
+        place_service = PlaceService(db)
+        cafes = place_service.get_nearby_places_brief(
+            center_lat=request.location.latitude,
+            center_lng=request.location.longitude,
+            category="cafe",
+            radius_m=500,
+            limit=5,
+        )
+        convenience_stores = place_service.get_nearby_places_brief(
+            center_lat=request.location.latitude,
+            center_lng=request.location.longitude,
+            category="convenience",
+            radius_m=500,
+            limit=5,
+        )
     
     return WorkoutTrackResponseWrapper(
         success=True,
@@ -211,7 +238,9 @@ def track_workout(
             duration=workout.duration or 0,
             avg_pace=round(avg_pace, 2) if avg_pace else None,
             calories=calories,
-            is_off_route=is_off_route
+            is_off_route=is_off_route,
+            cafes=cafes,
+            convenience_stores=convenience_stores,
         )
     )
 
