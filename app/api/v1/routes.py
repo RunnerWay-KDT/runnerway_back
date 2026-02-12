@@ -404,6 +404,51 @@ def get_route_detail(
 
 
 # ============================================
+# 경로 이름 수정
+# ============================================
+@router.patch(
+    "/{route_id}/name",
+    response_model=CommonResponse,
+    summary="경로 이름 수정",
+    description="경로(routes)의 이름을 수정합니다."
+)
+def update_route_name(
+    route_id: str = Path(..., description="경로 ID"),
+    body: dict = Body(..., example={"name": "새 경로 이름"}),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """경로 이름 수정 엔드포인트"""
+    route = db.query(Route).filter(
+        Route.id == route_id,
+        Route.user_id == current_user.id
+    ).first()
+    
+    if not route:
+        raise NotFoundException(
+            resource="Route",
+            resource_id=route_id
+        )
+    
+    new_name = (body.get("name") or "").strip()
+    if not new_name:
+        raise ValidationException(
+            message="이름은 비워둘 수 없습니다",
+            field="name"
+        )
+    
+    route.name = new_name
+    route.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return CommonResponse(
+        success=True,
+        message="경로 이름이 수정되었습니다",
+        data={"route_id": route.id, "name": route.name}
+    )
+
+
+# ============================================
 # 경로 저장 (북마크)
 # ============================================
 @router.post(
@@ -442,10 +487,11 @@ def save_route(
                 resource="RouteOption",
                 resource_id=route_option_id
             )
-        # 사용자가 이름을 수정한 경우 route_options.name 업데이트
-        if custom_name and custom_name.strip():
-            option.name = custom_name.strip()
-            db.commit()
+    
+    # 사용자가 이름을 수정한 경우 routes.name 업데이트
+    if custom_name and custom_name.strip():
+        route.name = custom_name.strip()
+        db.commit()
     
     # 이미 저장했는지 확인
     existing = db.query(SavedRoute).filter(
