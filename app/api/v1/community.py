@@ -173,14 +173,13 @@ def create_post(
 ):
     """게시글 작성 엔드포인트"""
     
-    # 운동 기록 연결 시 해당 운동 조회
-    workout_data = None
+    # 운동 기록 연결 시 해당 운동 유효성 검증
     if request.workout_id:
         from app.models.workout import Workout
         workout = db.query(Workout).filter(
             Workout.id == request.workout_id,
             Workout.user_id == current_user.id,
-            Workout.status == "completed"
+            Workout.deleted_at.is_(None)
         ).first()
         
         if not workout:
@@ -189,23 +188,32 @@ def create_post(
                 field="workout_id"
             )
         
-        workout_data = {
-            "type": workout.type,
-            "distance": float(workout.distance) if workout.distance else None,
-            "duration": workout.duration,
-            "route_shape": workout.shape_name
-        }
+        # 이미 공유된 운동인지 확인
+        existing_post = db.query(Post).filter(
+            Post.workout_id == request.workout_id,
+            Post.deleted_at.is_(None)
+        ).first()
+        if existing_post:
+            raise ValidationException(
+                message="이미 공유된 운동 기록입니다",
+                field="workout_id"
+            )
     
     # 게시글 생성
     post = Post(
-        user_id=current_user.id,
-        content=request.content,
-        images=request.images,
+        author_id=current_user.id,
         workout_id=request.workout_id,
-        type=workout_data.get("type") if workout_data else None,
-        distance=workout_data.get("distance") if workout_data else None,
-        duration=workout_data.get("duration") if workout_data else None,
-        route_shape=workout_data.get("route_shape") if workout_data else None
+        route_name=request.route_name,
+        shape_id=request.shape_id,
+        shape_name=request.shape_name,
+        shape_icon=request.shape_icon,
+        distance=request.distance,
+        duration=request.duration,
+        pace=request.pace,
+        calories=request.calories,
+        caption=request.caption,
+        visibility=request.visibility,
+        location=request.location,
     )
     
     db.add(post)

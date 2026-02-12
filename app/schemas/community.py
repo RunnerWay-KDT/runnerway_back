@@ -124,9 +124,15 @@ class CommentUpdateRequest(BaseModel):
 class PostCreateRequest(BaseModel):
     """게시물 작성 요청 스키마 (운동 공유)"""
     workout_id: Optional[str] = Field(None, description="공유할 운동 ID")
-    content: Optional[str] = Field(None, max_length=500, description="게시글 내용")
+    route_name: str = Field(..., min_length=1, max_length=100, description="경로 이름")
+    shape_id: Optional[str] = Field(None, description="도형 ID")
+    shape_name: Optional[str] = Field(None, description="도형 이름")
+    shape_icon: Optional[str] = Field(None, description="도형 아이콘")
+    distance: float = Field(..., description="거리 (km)")
+    duration: int = Field(..., description="시간 (초)")
+    pace: Optional[str] = Field(None, description="평균 페이스")
+    calories: Optional[int] = Field(None, description="칼로리")
     caption: Optional[str] = Field(None, max_length=500, description="캡션")
-    images: Optional[List[str]] = Field(None, description="이미지 URL 배열")
     visibility: str = Field("public", description="공개 범위 (public/private)")
     location: Optional[str] = Field(None, description="위치")
 
