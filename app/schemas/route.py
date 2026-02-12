@@ -326,4 +326,41 @@ class RouteDetailResponse(BaseModel):
 class RouteDetailResponseWrapper(BaseModel):
     """경로 상세 응답 래퍼"""
     success: bool = True
+    success: bool = True
     data: RouteDetailResponse
+
+
+# ============================================
+# 경로 추천 스키마 (Server.py 마이그레이션)
+# ============================================
+
+class RouteRecommendRequest(BaseModel):
+    """경로 추천 요청 스키마"""
+    lat: float = Field(..., description="시작 위도")
+    lng: float = Field(..., description="시작 경도")
+    target_distance_km: Optional[float] = Field(None, description="목표 거리 (km)")
+    target_time_min: Optional[float] = Field(None, description="목표 시간 (분)")  # 추가!
+    prompt: Optional[str] = Field(None, description="추천 요청 프롬프트 (예: 회복 러닝용)")
+
+
+class RouteCandidate(BaseModel):
+    """추천된 경로 후보 스키마"""
+    id: int = Field(..., description="경로 ID (1, 2, 3)")
+    name: str = Field(..., description="경로 이름 (예: Route A)")
+    distance: str = Field(..., description="거리 (예: 3.5km)")
+    time: int = Field(..., description="예상 소요 시간 (분)")
+    path: List[Dict[str, float]] = Field(..., description="좌표 리스트")
+    reason: Optional[str] = Field(None, description="추천 사유 (예: 경사도 정보)")
+    elevation_stats: Optional[Dict[str, Any]] = Field(None, description="고도 통계 데이터")
+
+
+
+class RouteRecommendResponse(BaseModel):
+    """경로 추천 응답 스키마"""
+    candidates: List[RouteCandidate] = Field(..., description="추천된 경로 후보 리스트 (3개)")
+
+class ElevationPrefetchRequest(BaseModel):
+    """고도 데이터 프리페칭 요청 스키마"""
+    lat: float = Field(..., description="중심 위도")
+    lng: float = Field(..., description="중심 경도")
+    radius: float = Field(2000, description="수집 반경(m)")

@@ -1,4 +1,4 @@
-# ============================================
+﻿# ============================================
 # app/api/v1/routes.py - 경로 API 라우터
 # ============================================
 # 경로 생성, 옵션 조회, 저장/삭제 등 경로 관련 API를 제공합니다.
@@ -6,8 +6,8 @@
 # ============================================
 from operator import ge
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, Body
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Query, Path, status, BackgroundTasks, HTTPException, Body
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
@@ -16,20 +16,41 @@ import logging, time
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.user import User
-from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape
+from app.models.route import Route, RouteOption, SavedRoute, RouteGenerationTask, RouteShape, generate_uuid
 from app.schemas.route import (
     RouteGenerateRequest, RouteGenerateResponse, RouteGenerateResponseWrapper,
     RouteOptionsResponse, RouteOptionsResponseWrapper,
     RouteDetailResponse, RouteDetailResponseWrapper,
+    RouteSaveRequest, RouteSaveResponse,
+    RouteSaveRequest, RouteSaveResponse,
     SaveRouteRequest, RouteSaveResponse,
     RouteOptionSchema, RoutePointSchema, RouteScoresSchema, ShapeInfoSchema,
+    RouteRecommendRequest, RouteRecommendResponse,
+    ElevationPrefetchRequest,
     SaveCustomDrawingRequest, SaveCustomDrawingResponse, SaveCustomDrawingResponseWrapper
 )
 from app.schemas.common import CommonResponse
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.exceptions import NotFoundException, ValidationException, ExternalAPIException
 from app.gps_art.generate_routes import generate_routes
 from app.models.route import Route, RouteOption, RouteShape
 from app.services.gps_art_service import generate_gps_art_impl
+
+import osmnx as ox
+import networkx as nx
+import logging
+import random
+import math
+import time
+import os
+from app.utils.geometry import has_self_intersection, calculate_path_area
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
+
+# OSMnx 설정
+ox.settings.use_cache = True
+ox.settings.log_console = False
+
 from app.utils.svg_simplify import simplify_svg_path, get_simplification_stats
 
 logger = logging.getLogger(__name__)
@@ -79,7 +100,7 @@ def request_route_generation(
         )
     
     # Task ID 생성
-    task_id = str(uuid.uuid4())
+    task_id = generate_uuid()
     
     # 경로 생성 Task 저장
     route_task = RouteGenerationTask(
@@ -100,10 +121,21 @@ def request_route_generation(
     db.commit()
     
     # 백그라운드에서 경로 생성 실행
+    # 백그라운드에서 경로 생성 실행
+    # 2024-02-06 Fix: 동기 래퍼 함수를 사용하여 비동기 함수 실행 및 DB 세션 안전하게 관리
+    from app.services.background_tasks import run_generate_route_background
+    
     background_tasks.add_task(
-        generate_route_background,
+        run_generate_route_background,
         task_id=task_id,
-        db=db
+        user_id=current_user.id,
+        request_data={
+            'lat': request.start_location.lat,
+            'lng': request.start_location.lng,
+            'target_time_min': None, # 거리 기반이므로 시간은 None
+            'target_distance_km': request.distance,
+            'prompt': request.avoid_steep and "안전" or "" # 예시
+        }
     )
     
     return RouteGenerateResponseWrapper(
@@ -271,8 +303,8 @@ def get_route_options(
 ):
     """경로 옵션 조회 엔드포인트"""
     
-    # 경로 조회 (Route.id는 UUID 문자열)
-    route = db.query(Route).filter(
+    # 경로 조회 (옵션과 함께 로드 -> N+1 문제 해결)
+    route = db.query(Route).options(joinedload(Route.options)).filter(
         Route.id == route_id,
         Route.user_id == current_user.id
     ).first()
@@ -655,35 +687,54 @@ def recommend_waypoints(
 
 
 # ============================================
-# 커스텀 그림 경로 저장
+# 경로 추천 (Server.py 로직 이관)
 # ============================================
 @router.post(
-    "/custom-drawing",
-    response_model=SaveCustomDrawingResponseWrapper,
-    status_code=status.HTTP_201_CREATED,
-    summary="커스텀 그림 경로 저장",
-    description="""
-    사용자가 직접 그린 경로를 SVG Path 형태로 저장합니다.
-    
-    **저장 정보:**
-    - SVG Path 데이터
-    - 시작 위치 (위도, 경도)
-    - 예상 거리
-    - 경로 이름
-    
-    **반환 데이터:**
-    - route_id: 생성된 경로 ID
-    - 저장된 경로 정보
-    """
+    "/recommend",
+    response_model=RouteRecommendResponse,
+    summary="AI 경로 추천",
+    description="GPT와 OSMnx를 사용하여 사용자 맞춤형 경로를 추천합니다."
 )
-def save_custom_drawing(
-    request: SaveCustomDrawingRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+async def recommend_route(
+    request: RouteRecommendRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # DB 저장 위해 인증 추가
 ):
-    """커스텀 그림 경로 저장 엔드포인트"""
+    """
+    AI 기반 경로 추천 엔드포인트
+    (거리/시간 정확도 개선)
+    """
+    from app.services.road_network import RoadNetworkFetcher
     
+    user_location = (request.lat, request.lng)
+    
+    # 1. 목표 거리 설정 (컨디션 기반 또는 GPT)
+    target_dist_km = request.target_distance_km
+    
+    # 0. 프롬프트 기반 컨디션 설정 (거리는 설정하지 않음!)
+    # Frontend sends constructed prompts like "목적: 회복 러닝..."
+    condition = "normal"  # 기본값
+    if request.prompt:
+        p = request.prompt.lower()
+        if "recovery" in p or "회복" in p or "easy" in p:
+            condition = "recovery"
+        elif "fat" in p or "지방" in p or "burn" in p:
+            condition = "fat-burn"
+        elif "challenge" in p or "기록" in p or "hard" in p:
+            condition = "challenge"
+
+            condition = "challenge"
+ 
+    # logger.info(f"Processing request: {user_location}, condition: {condition}")
+    
+    candidates = []
+    
+    candidates = []
+
     try:
+        # 1. RoadNetworkFetcher 초기화
+        fetcher = RoadNetworkFetcher()
+
         print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
         print(f"📝 [경로저장] 원본 SVG Path 길이: {len(request.svg_path)} characters")
         
@@ -696,53 +747,383 @@ def save_custom_drawing(
         print(f"✨ [경로단순화] 감소율: {stats['reduction_rate']}%")
         print(f"✨ [경로단순화] 단순화 SVG Path 길이: {len(simplified_svg_path)} characters")
         
-        # Route 생성
-        route = Route(
-            id=str(uuid.uuid4()),
+        # 2. 먼저 페이스 계산하여 target_dist_km 결정
+        # 컨디션별 페이스 설정 (분/km) - 10km 최대 제한에 맞춰 조정
+        # Recovery: 15분/km (느린 조깅/걷기) → 60분에 4km
+        # Normal (Fat Burn): 10분/km (일반 조깅) → 60분에 6km
+        # Challenge: 7분/km (빠른 달리기) → 60분에 8.5km
+        if condition == "recovery":
+            pace_min_per_km = 15.0  # 4km/h -> 15 min/km
+        elif condition == "challenge":
+            pace_min_per_km = 6.0   # 10km/h -> 6 min/km (Previously 7.0)
+        else:  # normal (fat-burn)
+            pace_min_per_km = 10.0  # 6km/h -> 10 min/km
+        
+        # 목표 시간 vs 목표 거리 우선순위
+        if request.target_time_min and request.target_time_min > 0:
+            target_time_min = request.target_time_min
+            target_dist_km = target_time_min / pace_min_per_km
+            # logger.info(f"[TIME-BASED] 목표 시간 {target_time_min}분 → 거리 {target_dist_km:.2f}km (페이스: {pace_min_per_km}분/km)")
+        elif target_dist_km and target_dist_km > 0:
+            target_time_min = target_dist_km * pace_min_per_km
+            # logger.info(f"[DISTANCE-BASED] 목표 거리 {target_dist_km}km → 시간 {target_time_min}분 (페이스: {pace_min_per_km}분/km)")
+        else:
+            target_time_min = 30.0
+            target_dist_km = target_time_min / pace_min_per_km
+            # logger.info(f"[DEFAULT] 기본 시간 30분 → 거리 {target_dist_km:.2f}km (페이스: {pace_min_per_km}분/km)")
+        
+        # 최대 거리 제한 (성능 이슈 방지) - 10km로 제한
+        MAX_DISTANCE_KM = 10.0
+        if target_dist_km > MAX_DISTANCE_KM:
+            logger.warning(f"Target distance {target_dist_km:.2f}km -> capped at {MAX_DISTANCE_KM}km")
+            target_dist_km = MAX_DISTANCE_KM
+            # 시간은 재계산하지 않음 (사용자가 원한 시간이 있으므로, '시간 내에 갈 수 있는 최대 거리' 개념)
+        
+        # 3. 이제 거리가 결정되었으므로 radius_meter 계산
+        # 원형 왕복 코스를 가정할 때, 지름이 목표 거리의 약 1/pi ~ 1/2 정도가 됨
+        # 하지만 다양한 경로 탐색을 위해 조금 넉넉하게 잡되, 너무 크면 성능 저하
+        radius_meter = (target_dist_km / 2) * 1000 * 0.7  # 10km -> 3.5km 반경 (지름 7km)
+        
+        if radius_meter < 1000: radius_meter = 1000  # 최소 반경 축소
+        # 최대 반경 제한 (성능 최적화) - 2.5km로 축소
+        MAX_RADIUS_M = 2500
+        if radius_meter > MAX_RADIUS_M:
+            logger.warning(f"Capping radius at {MAX_RADIUS_M}m (calculated: {radius_meter:.0f}m)")
+            radius_meter = MAX_RADIUS_M
+        
+        # logger.info(f"Fetching network with radius {radius_meter}m...")
+        import asyncio
+        # OSMnx 호출은 CPU 및 I/O 집약적인 동기 함수이므로 쓰레드 풀에서 실행
+        G = await asyncio.to_thread(
+            fetcher.fetch_pedestrian_network_from_point,
+            center_point=user_location,
+            distance=radius_meter
+        )
+        
+        # ----------------------------
+        # 경사도 로직 추가
+        # ----------------------------
+        # 1. 고도 추가 (SRTM 로컬 데이터)
+        await asyncio.to_thread(fetcher.add_elevation_to_nodes, G)
+        # 2. 경사도 및 가중치 계산
+        fetcher.calculate_edge_grades_and_weights(G)
+        
+        # 3개 경로를 각각 다른 가중치로 직접 생성
+        route_configs = [
+            {"name": "평지 경로",   "weight": "weight_easy", "tag": None},
+            {"name": "균형 경로",   "weight": "length",      "tag": "BEST"},
+            {"name": "업다운 경로", "weight": "weight_hard",  "tag": None},
+        ]
+        
+        # (페이스 계산은 이미 윗부분에서 완료됨)
+        
+        # 출발지 노드 찾기
+        orig_node = ox.distance.nearest_nodes(G, user_location[1], user_location[0])
+        
+        for i, config in enumerate(route_configs):
+            route_data = None
+            weight_key = config["weight"]
+            
+            # 최대 2회 시도 (자기 교차 시 재시도)
+            for attempt in range(2):
+                try:
+                    bearing = random.uniform(0, 360) + (attempt * 45)  # 재시도 시 방향 변경
+                    
+                    distance_variation = random.uniform(0.9, 1.1)
+                    current_target_km = target_dist_km * distance_variation
+                    
+                    tortuosity_factor = 1.3
+                    current_target_radius_m = (current_target_km * 1000 / 2) / tortuosity_factor
+                    
+                    min_dist = current_target_radius_m * 0.85
+                    max_dist = current_target_radius_m * 1.15
+                    
+                    candidate_nodes = []
+                    for node, data in G.nodes(data=True):
+                        node_lat = float(data['lat'])
+                        node_lng = float(data['lon'])
+                        dist = ox.distance.great_circle(user_location[0], user_location[1], node_lat, node_lng)
+                        
+                        if min_dist <= dist <= max_dist:
+                            y = math.sin(math.radians(node_lng - user_location[1])) * math.cos(math.radians(node_lat))
+                            x = math.cos(math.radians(user_location[0])) * math.sin(math.radians(node_lat)) - \
+                                math.sin(math.radians(user_location[0])) * math.cos(math.radians(node_lat)) * \
+                                math.cos(math.radians(node_lng - user_location[1]))
+                            calc_bearing = math.degrees(math.atan2(y, x))
+                            calc_bearing = (calc_bearing + 360) % 360
+                            
+                            angle_diff = abs(calc_bearing - bearing)
+                            angle_diff = min(angle_diff, 360 - angle_diff)
+                            
+                            if angle_diff < 40:
+                                candidate_nodes.append((node, angle_diff, dist))
+                    
+                    if candidate_nodes:
+                        candidate_nodes.sort(key=lambda x: x[1])
+                        dest_node = candidate_nodes[0][0]
+                    else:
+                        user_lat_float = float(user_location[0])
+                        user_lng_float = float(user_location[1])
+                        possible_nodes = [
+                            n for n, d in G.nodes(data=True) 
+                            if min_dist <= ox.distance.great_circle(
+                                user_lat_float, user_lng_float,
+                                float(d['lat']), float(d['lon'])
+                            ) <= max_dist
+                        ]
+                        if possible_nodes:
+                            dest_node = random.choice(possible_nodes)
+                        else:
+                            continue
+                    
+                    # 경로 계산 (왕복)
+                    route_to = nx.shortest_path(G, orig_node, dest_node, weight=weight_key)
+                    
+                    # 오는 길 (가는 길 피해서)
+                    edges_to_penalize = []
+                    try:
+                        for u, v in zip(route_to[:-1], route_to[1:]):
+                            if G.has_edge(u, v):
+                                edge_data = G[u][v]
+                                if isinstance(edge_data, dict) and weight_key in edge_data:
+                                    edges_to_penalize.append((u, v, edge_data[weight_key]))
+                                    edge_data[weight_key] *= 10
+                                else:
+                                    for key in edge_data:
+                                        if isinstance(edge_data[key], dict) and weight_key in edge_data[key]:
+                                            edges_to_penalize.append((u, v, key, edge_data[key][weight_key]))
+                                            edge_data[key][weight_key] *= 10
+                        
+                        route_from = nx.shortest_path(G, dest_node, orig_node, weight=weight_key)
+                    except nx.NetworkXNoPath:
+                        route_from = route_to[::-1]
+                    finally:
+                        for item in edges_to_penalize:
+                            if len(item) == 3:
+                                u, v, original_val = item
+                                G[u][v][weight_key] = original_val
+                            elif len(item) == 4:
+                                u, v, key, original_val = item
+                                G[u][v][key][weight_key] = original_val
+                    
+                    if not route_from:
+                        route_from = route_to[::-1]
+                    
+                    full_route = route_to + route_from[1:]
+                    
+                    real_distance_m = fetcher.calculate_path_distance(G, full_route)
+                    real_distance_km = real_distance_m / 1000.0
+                    
+                    if real_distance_km < 0.1:
+                        logger.warning(f"Calculated distance too small ({real_distance_km}km). Using target {current_target_km}km instead.")
+                        real_distance_km = current_target_km
+                    
+                    est_time_min = int(real_distance_km * pace_min_per_km)
+                    if est_time_min == 0: est_time_min = int(current_target_km * pace_min_per_km)
+                    
+                    path_coords = fetcher.path_to_kakao_coordinates(G, full_route)
+                    stats = fetcher.get_elevation_stats(G, full_route)
+                    # total_elev_change = fetcher.calculate_total_elevation_change(G, full_route) -> stats에 포함됨
+                    
+                    # 자기 교차 검증
+                    if has_self_intersection(path_coords):
+                        logger.warning(f"{config['name']} (attempt {attempt+1}) rejected (self-intersection).")
+                        if attempt == 0:
+                            continue  # 재시도
+                        # 2차에도 실패 시 그래도 사용
+                    
+                    route_data = {
+                        'coords': path_coords,
+                        'distance_km': real_distance_km,
+                        'time': est_time_min,
+                        'elevation_change': stats.get('total_elevation_change', 0),
+                        'stats': stats,
+                    }
+                    break  # 성공
+                    
+                except Exception as e:
+                    logger.error(f"{config['name']} (attempt {attempt+1}) failed: {str(e)}", exc_info=True)
+                    continue
+            
+            if route_data:
+                candidates.append({
+                    "id": i + 1,
+                    "name": config["name"],
+                    "distance": f"{route_data['distance_km']:.2f}km",
+                    "time": route_data['time'],
+                    "path": route_data['coords'],
+                    "reason": f"총 고도변화: {route_data['elevation_change']:.0f}m, 획득고도: {route_data['stats']['total_ascent']:.0f}m",
+                    "elevation_stats": route_data['stats']
+                })
+        
+        logger.info(f"Generated {len(candidates)} routes with different weights.")
+
+    except Exception as e:
+        logger.error(f"Error generating route: {str(e)}", exc_info=True)
+        raise ExternalAPIException(f"경로 생성에 실패했습니다: {str(e)}")
+    
+    # 4. 후보 경로가 없으면 에러 반환
+    if not candidates:
+        logger.error("No route candidates generated. Check OSMnx network or path finding logic.")
+        raise ExternalAPIException(
+            "경로를 생성할 수 없습니다. 해당 위치에서 적절한 도로 네트워크를 찾을 수 없습니다."
+        )
+    
+    # ============================================
+    # DB 저장 로직 추가 (사용자 요청)
+    # ============================================
+    try:
+        # 1. 상위 Route 객체 생성
+        # 추천 경로는 type='recommendation'으로 구분하거나, 기존 'preset'/'custom'과 다른 방식으로 처리
+        # 여기서는 type='recommendation'으로 저장 (User 모델 등 다른 곳과 호환성 확인 필요)
+        # 만약 type이 enum이면 schema 확인 필요. 현재는 String.
+        new_route = Route(
             user_id=current_user.id,
-            name=request.name,
-            type="custom",  # 커스텀 그리기
-            mode="none",    # 도형 그리기 (운동 모드 없음)
-            start_latitude=request.location.latitude,
-            start_longitude=request.location.longitude,
+            name=f"추천 경로 ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+            type="recommendation",  # 추천 경로 타입
+            mode="running",         # 러닝 모드 고정
+            start_latitude=user_location[0],
+            start_longitude=user_location[1],
+            condition=condition,
+            safety_mode=False,      # 기본값
             svg_path=simplified_svg_path,  # 단순화된 SVG Path 저장
             status="active"
         )
+        db.add(new_route)
+        db.flush()  # ID 생성을 위해 flush
         
-        print(f"✅ [경로저장] Route 객체 생성 완료: id={route.id}")
-        
-        db.add(route)
-        print(f"✅ [경로저장] DB에 추가 완료, commit 시도 중...")
-        
+        # 2. RouteOption 객체 생성 및 저장
+        for candidate in candidates:
+            # candidate 구조: 
+            # {
+            #   "id": 1, "name": "...", "distance": "3.5km", "time": 20, 
+            #   "path": [...], "elevation_stats": {...}, ...
+            # }
+            
+            # 거리 문자열 "3.5km" -> float 3.5 변환
+            dist_str = candidate["distance"].replace("km", "").strip()
+            try:
+                dist_val = float(dist_str)
+            except:
+                dist_val = 0.0
+                
+            # 페이스 문자열 생성 (분:초/km)
+            # 여기서는 단순 계산값 사용 (condition 기반)
+            pace_sec = int(pace_min_per_km * 60)
+            pace_min = pace_sec // 60
+            pace_sec_rem = pace_sec % 60
+            pace_str = f"{int(pace_min)}:{int(pace_sec_rem):02d}"
+            
+            # 매핑 정의
+            condition_map = {
+                "recovery": "회복러닝", 
+                "fat-burn": "지방연소", 
+                "challenge": "기록 도전"
+            }
+            difficulty_map = {
+                "평지 경로": "쉬움",
+                "균형 경로": "보통", 
+                "업다운 경로": "도전"
+            }
+            
+            # 고도 데이터 추출
+            stats = candidate.get("elevation_stats", {})
+            
+            option = RouteOption(
+                route_id=new_route.id,
+                option_number=candidate["id"],
+                name=candidate["name"],
+                distance=dist_val,
+                estimated_time=candidate["time"],
+                recommended_pace=pace_str,
+                condition_type=condition_map.get(condition, condition),
+                difficulty=difficulty_map.get(candidate["name"], "보통"),
+                coordinates=candidate["path"],
+                
+                # 고도 데이터 매핑 (핵심 요청 사항)
+                max_elevation_diff=int(stats.get("max_elevation_diff", 0)),
+                total_ascent=stats.get("total_ascent", 0.0),
+                total_descent=stats.get("total_descent", 0.0),
+                total_elevation_change=stats.get("total_elevation_change", 0.0),
+                average_grade=stats.get("average_grade", 0.0),
+                max_grade=stats.get("max_grade", 0.0),
+                
+                # 기타
+                safety_score=0,
+                lighting_score=0
+            )
+            db.add(option)
+            
         db.commit()
-        print(f"✅ [경로저장] Commit 성공!")
-        
-        db.refresh(route)
-        print(f"✅ [경로저장] Refresh 완료")
-        
-        return SaveCustomDrawingResponseWrapper(
-            success=True,
-            data=SaveCustomDrawingResponse(
-                route_id=route.id,
-                name=route.name,
-                svg_path=route.svg_path,  # 컬럼명 수정
-                estimated_distance=request.estimated_distance,
-                created_at=route.created_at
-            ),
-            message="커스텀 경로가 성공적으로 저장되었습니다"
-        )
+        logger.info(f"Successfully saved recommended route {new_route.id} and {len(candidates)} options.")
         
     except Exception as e:
-        print(f"❌ [경로저장] 에러 발생: {type(e).__name__}")
-        print(f"❌ [경로저장] 에러 메시지: {str(e)}")
-        import traceback
-        print(f"❌ [경로저장] 스택 트레이스:\n{traceback.format_exc()}")
-        
+        logger.error(f"Failed to save recommended route to DB: {e}", exc_info=True)
+        # DB 저장이 실패해도 추천 결과는 반환하는 것이 사용자 경험상 좋음
+        # 단, 트랜잭션 롤백 필요
         db.rollback()
-        raise ValidationException(
-            message=f"경로 저장 중 오류가 발생했습니다: {str(e)}",
-            field="route"
+        # 에러를 무시하고 진행할지, 아니면 사용자에게 알릴지 결정.
+        # 여기서는 로그만 남기고 결과는 반환.
+        
+    return {"candidates": candidates}
+
+
+# ============================================
+# 고도 데이터 프리페칭 (Pre-fetching)
+# ============================================
+@router.post(
+    "/prefetch-elevation",
+    response_model=CommonResponse,
+    summary="고도 데이터 미리 수집",
+    description="사용자가 위치를 설정했을 때 주변 고도 데이터를 백그라운드에서 미리 수집하여 캐싱합니다."
+)
+async def prefetch_elevation(
+    request: ElevationPrefetchRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    사용자가 경로 설정을 완료하기 전에 미리 데이터를 채움
+    """
+    logger.info(f"Prefetching elevation for ({request.lat}, {request.lng}) with radius {request.radius}m")
+    
+    # 실제 수집 로직은 백그라운드 태스크로 넘겨서 사용자 응답 지연 방지
+    background_tasks.add_task(
+        run_elevation_prefetch,
+        request.lat,
+        request.lng,
+        request.radius,
+        db
+    )
+    
+    return {
+        "success": True,
+        "message": "고도 데이터 프리페칭을 시작했습니다 (백그라운드)"
+    }
+
+
+async def run_elevation_prefetch(lat: float, lng: float, radius: float, db: Session = None):
+    """백그라운드에서 실행되는 고도 프리페치 (SRTM은 자동 캐싱하므로 네트워크만 미리 로드)"""
+    from app.services.road_network import RoadNetworkFetcher
+    import asyncio
+    
+    try:
+        fetcher = RoadNetworkFetcher()
+        # 1. 주변 도로 네트워크 가져오기 (캐시됨)
+        G = await asyncio.to_thread(
+            fetcher.fetch_pedestrian_network_from_point,
+            center_point=(lat, lng),
+            distance=radius
         )
+        
+        # 2. SRTM 고도 데이터 로드 (첫 조회 시 타일 다운로드됨)
+        await asyncio.to_thread(fetcher.add_elevation_to_nodes, G)
+        
+        logger.info(f"Background prefetch completed for ({lat}, {lng})")
+        
+    except Exception as e:
+        logger.error(f"Error during background elevation prefetch: {e}")
+
 
 # ============================================
 # GPS 아트 경로 생성 (save_custom_drawing / get_shape_templates 활용)
@@ -830,7 +1211,7 @@ def _generate_gps_art_background(task_id: str):
                 db.commit()
                 _last_commit_percent[0] = percent
 
-        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작", task_id)
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 시작 %s", task_id)
         # 중간 단계: generate_gps_art_impl 호출 시 콜백 전달
         result = generate_gps_art_impl(
             body=task.request_data, 
@@ -839,7 +1220,7 @@ def _generate_gps_art_background(task_id: str):
             on_progress=update_progress, # 진행 상태 콜백 전달
         )
 
-        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료", task_id)
+        logger.info("[GPS 아트 경로 생성] 백그라운드 작업 완료 %s", task_id)
 
         task.status = "completed"
         task.progress = 100

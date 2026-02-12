@@ -209,8 +209,9 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
             options={"verify_exp": False}
         )
         return payload
-    except JWTError:
+    except JWTError as e:
         # 토큰이 유효하지 않음 (만료, 서명 불일치 등)
+        print(f"❌ [토큰 디코딩 오류 상세] {str(e)}")
         return None
 
 
