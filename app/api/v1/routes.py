@@ -753,30 +753,14 @@ async def recommend_route(
             condition = "fat-burn"
         elif "challenge" in p or "기록" in p or "hard" in p:
             condition = "challenge"
-
-            condition = "challenge"
  
     # logger.info(f"Processing request: {user_location}, condition: {condition}")
-    
-    candidates = []
     
     candidates = []
 
     try:
         # 1. RoadNetworkFetcher 초기화
         fetcher = RoadNetworkFetcher()
-
-        print(f"📝 [경로저장] 요청 데이터: name={request.name}, location=({request.location.latitude}, {request.location.longitude})")
-        print(f"📝 [경로저장] 원본 SVG Path 길이: {len(request.svg_path)} characters")
-        
-        # SVG Path 단순화 (Douglas-Peucker 알고리즘)
-        simplified_svg_path = simplify_svg_path(request.svg_path, epsilon=5.0)
-        stats = get_simplification_stats(request.svg_path, simplified_svg_path)
-        
-        print(f"✨ [경로단순화] 원본 포인트: {stats['original_points']}개")
-        print(f"✨ [경로단순화] 단순화 포인트: {stats['simplified_points']}개")
-        print(f"✨ [경로단순화] 감소율: {stats['reduction_rate']}%")
-        print(f"✨ [경로단순화] 단순화 SVG Path 길이: {len(simplified_svg_path)} characters")
         
         # 2. 먼저 페이스 계산하여 target_dist_km 결정
         # 컨디션별 페이스 설정 (분/km) - 10km 최대 제한에 맞춰 조정
@@ -1017,7 +1001,7 @@ async def recommend_route(
             start_longitude=user_location[1],
             condition=condition,
             safety_mode=False,      # 기본값
-            svg_path=simplified_svg_path,  # 단순화된 SVG Path 저장
+            svg_path=None,          # 추천 경로는 SVG Path 없음
             status="active"
         )
         db.add(new_route)

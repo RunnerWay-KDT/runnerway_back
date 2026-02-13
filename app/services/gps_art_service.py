@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import ValidationException
 from app.gps_art.generate_routes import generate_routes
-from app.models.route import Route, RouteOption, RouteShape
+from app.models.route import Route, RouteOption, RouteShape, SavedRoute
+from app.models.workout import Workout
 from app.utils.safety_score import calculate_safety_score
 from app.gps_art.nearby_places import get_places_ids
 
@@ -33,6 +34,24 @@ def generate_gps_art_impl(
             raise ValidationException(message="해당 경로를 찾을 수 없습니다.", field="route_id")
         if not route.svg_path:
             raise ValidationException(message="해당 경로에 SVG 데이터가 없습니다.", field="route_id")
+
+        # 재생성 시 기존 RouteOption 삭제 (UniqueConstraint 충돌 방지)
+        existing_options = db.query(RouteOption).filter(
+            RouteOption.route_id == route_id_from_body
+        ).all()
+        if existing_options:
+            existing_option_ids = [opt.id for opt in existing_options]
+            # SavedRoute에서 참조 중인 route_option_id를 NULL로 변경 (FK 위반 방지)
+            db.query(SavedRoute).filter(
+                SavedRoute.route_option_id.in_(existing_option_ids)
+            ).update({SavedRoute.route_option_id: None}, synchronize_session='fetch')
+            # Workout에서 참조 중인 route_option_id를 NULL로 변경 (FK 위반 방지)
+            db.query(Workout).filter(
+                Workout.route_option_id.in_(existing_option_ids)
+            ).update({Workout.route_option_id: None}, synchronize_session='fetch')
+            for opt in existing_options:
+                db.delete(opt)
+            db.flush()
 
         start_lat = float(route.start_latitude)
         start_lon = float(route.start_longitude)
