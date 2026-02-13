@@ -160,6 +160,8 @@ class WorkoutSummarySchema(BaseModel):
     route_completion: Optional[float] = None
     is_bookmarked: bool = False
     svg_path: Optional[str] = None
+    shape_id: Optional[str] = None      # 프리셋 도형 식별자 (예: 'heart', 'star')
+    icon_name: Optional[str] = None      # 프리셋 도형 아이콘 이름
     started_at: datetime
     completed_at: Optional[datetime] = None
     

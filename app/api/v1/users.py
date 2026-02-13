@@ -294,17 +294,31 @@ def get_my_workouts(
         ).all()
         bookmarked_route_ids = {r.route_id for r in bookmarked}
         
-        # route별 name, svg_path 한 번에 조회 (N+1 방지)
-        route_rows = db.query(Route.id, Route.name, Route.svg_path).filter(
+        # route별 name, svg_path, shape 정보 한 번에 조회 (N+1 방지)
+        route_rows = db.query(Route.id, Route.name, Route.svg_path, Route.shape_id).filter(
             Route.id.in_(workout_route_ids)
         ).all()
-        route_info_map = {r.id: {"name": r.name, "svg_path": r.svg_path} for r in route_rows}
+        route_info_map = {r.id: {"name": r.name, "svg_path": r.svg_path, "shape_id": r.shape_id} for r in route_rows}
+        
+        # 프리셋 도형의 icon_name 조회 (N+1 방지)
+        shape_ids = [r.shape_id for r in route_rows if r.shape_id]
+        shape_icon_map = {}  # shape_id → icon_name
+        if shape_ids:
+            from app.models.route import RouteShape
+            shape_rows = db.query(RouteShape.id, RouteShape.icon_name).filter(
+                RouteShape.id.in_(shape_ids)
+            ).all()
+            shape_icon_map = {s.id: s.icon_name for s in shape_rows}
     
     workout_list = []
     for workout in workouts:
         # routes.name을 우선 사용, 없으면 workouts.route_name 폴백
         route_info = route_info_map.get(workout.route_id, {}) if workout.route_id else {}
         display_name = route_info.get("name") or workout.route_name
+        # 프리셋 도형 정보 (shape_id, icon_name)
+        route_shape_id = route_info.get("shape_id")
+        route_icon_name = shape_icon_map.get(route_shape_id) if route_shape_id else None
+        
         workout_list.append(WorkoutSummarySchema(
             id=workout.id,
             route_id=workout.route_id,
@@ -318,6 +332,8 @@ def get_my_workouts(
             route_completion=float(workout.route_completion) if workout.route_completion else None,
             is_bookmarked=workout.route_id in bookmarked_route_ids if workout.route_id else False,
             svg_path=route_info.get("svg_path") if workout.route_id else None,
+            shape_id=route_shape_id,
+            icon_name=route_icon_name,
             started_at=workout.started_at,
             completed_at=workout.completed_at
         ))

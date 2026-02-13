@@ -1355,15 +1355,23 @@ def get_option_places(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    route = db.query(Route).filter(Route.id == route_id, Route.user_id == current_user.id).first()
+    route = db.query(Route).filter(Route.id == route_id).first()
     if not route:
-        raise NotFoundException(resource="Route", resource_id=route_id)
+        raise NotFoundException(resource="Route")
+    # 본인 경로이거나 북마크(저장)한 경로인지 확인
+    is_owner = route.user_id == current_user.id
+    is_saved = db.query(SavedRoute).filter(
+        SavedRoute.route_id == route_id,
+        SavedRoute.user_id == current_user.id
+    ).first() is not None
+    if not is_owner and not is_saved:
+        raise NotFoundException(resource="Route")
     option = db.query(RouteOption).filter(
         RouteOption.id == option_id,
         RouteOption.route_id == route_id
     ).first()
     if not option:
-        raise NotFoundException(resource="RouteOption", resouce_id=route_id)
+        raise NotFoundException(resource="RouteOption")
     place_ids_raw = getattr(option, "place_ids", None) or {}
     all_ids = list((place_ids_raw.get("cafe") or []) + (place_ids_raw.get("convenience") or []))
     if not all_ids:
