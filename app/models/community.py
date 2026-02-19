@@ -44,6 +44,7 @@ class Post(Base):
     shape_id = Column(String(50), nullable=True)
     shape_name = Column(String(50), nullable=True)
     shape_icon = Column(String(50), nullable=True)
+    svg_path = Column(Text, nullable=True, comment='커스텀 경로 SVG Path 데이터')
     
     # 운동 통계
     distance = Column(DECIMAL(5, 2), nullable=False)
