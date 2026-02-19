@@ -53,8 +53,14 @@ def generate_gps_art_impl(
                 db.delete(opt)
             db.flush()
 
-        start_lat = float(route.start_latitude)
-        start_lon = float(route.start_longitude)
+        # body["start"]가 있으면 사용자가 전달한 현재 위치 우선 사용
+        start_override = body.get("start", {})
+        if start_override.get("lat") and start_override.get("lng"):
+            start_lat = float(start_override["lat"])
+            start_lon = float(start_override["lng"])
+        else:
+            start_lat = float(route.start_latitude)
+            start_lon = float(route.start_longitude)
         svg_path = route.svg_path
 
         result = generate_routes(
