@@ -57,6 +57,7 @@ class PostSchema(BaseModel):
     shape_id: Optional[str] = None
     shape_name: Optional[str] = None
     shape_icon: Optional[str] = None
+    svg_path: Optional[str] = None
     distance: float = 0
     duration: int = 0
     pace: Optional[str] = None
@@ -138,6 +139,7 @@ class PostCreateRequest(BaseModel):
     shape_id: Optional[str] = Field(None, description="도형 ID")
     shape_name: Optional[str] = Field(None, description="도형 이름")
     shape_icon: Optional[str] = Field(None, description="도형 아이콘")
+    svg_path: Optional[str] = Field(None, description="커스텀 경로 SVG Path 데이터")
     distance: float = Field(..., description="거리 (km)")
     duration: int = Field(..., description="시간 (초)")
     pace: Optional[str] = Field(None, description="평균 페이스")

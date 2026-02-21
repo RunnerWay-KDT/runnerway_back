@@ -16,7 +16,7 @@ from app.api.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.community import Post, PostLike, PostBookmark, Comment, CommentLike
 from app.models.workout import Workout
-from app.models.route import SavedRoute, RouteOption
+from app.models.route import Route, SavedRoute, RouteOption
 from app.schemas.community import (
     PostCreateRequest, PostUpdateRequest,
     PostSchema, PostDetailSchema,
@@ -109,6 +109,8 @@ def get_feed(
         actual_path = None
         start_lat = None
         start_lng = None
+        # svg_path: Post에 저장된 값 우선, 없으면 workout→route fallback
+        svg_path = post.svg_path
         if post.workout_id:
             workout = db.query(Workout).filter(
                 Workout.id == post.workout_id
@@ -117,6 +119,11 @@ def get_feed(
                 actual_path = workout.actual_path
                 start_lat = float(workout.start_latitude) if workout.start_latitude else None
                 start_lng = float(workout.start_longitude) if workout.start_longitude else None
+                # Post에 svg_path가 없으면 연결된 route에서 조회
+                if not svg_path and workout.route_id:
+                    route = db.query(Route).filter(Route.id == workout.route_id).first()
+                    if route and route.svg_path:
+                        svg_path = route.svg_path
         
         post_data = {
             "id": post.id,
@@ -129,6 +136,7 @@ def get_feed(
             "shape_id": post.shape_id,
             "shape_name": post.shape_name,
             "shape_icon": post.shape_icon,
+            "svg_path": svg_path,
             "distance": float(post.distance) if post.distance else 0,
             "duration": post.duration or 0,
             "pace": post.pace,
@@ -218,6 +226,17 @@ def create_post(
                 field="workout_id"
             )
     
+    # svg_path: 요청에 포함된 경우 사용, 없으면 workout→route에서 조회
+    svg_path_value = request.svg_path
+    if not svg_path_value and request.workout_id:
+        workout_for_svg = db.query(Workout).filter(
+            Workout.id == request.workout_id
+        ).first()
+        if workout_for_svg and workout_for_svg.route_id:
+            route_for_svg = db.query(Route).filter(Route.id == workout_for_svg.route_id).first()
+            if route_for_svg and route_for_svg.svg_path:
+                svg_path_value = route_for_svg.svg_path
+    
     # 게시글 생성
     post = Post(
         author_id=current_user.id,
@@ -226,6 +245,7 @@ def create_post(
         shape_id=request.shape_id,
         shape_name=request.shape_name,
         shape_icon=request.shape_icon,
+        svg_path=svg_path_value,
         distance=request.distance,
         duration=request.duration,
         pace=request.pace,
@@ -323,6 +343,8 @@ def get_post_detail(
     actual_path = None
     start_lat = None
     start_lng = None
+    # svg_path: Post에 저장된 값 우선, 없으면 workout→route fallback
+    svg_path = post.svg_path
     if post.workout_id:
         workout = db.query(Workout).filter(
             Workout.id == post.workout_id
@@ -331,6 +353,11 @@ def get_post_detail(
             actual_path = workout.actual_path
             start_lat = float(workout.start_latitude) if workout.start_latitude else None
             start_lng = float(workout.start_longitude) if workout.start_longitude else None
+            # Post에 svg_path가 없으면 연결된 route에서 조회
+            if not svg_path and workout.route_id:
+                route = db.query(Route).filter(Route.id == workout.route_id).first()
+                if route and route.svg_path:
+                    svg_path = route.svg_path
     
     return {
         "success": True,
@@ -346,6 +373,7 @@ def get_post_detail(
                 "shape_id": post.shape_id,
                 "shape_name": post.shape_name,
                 "shape_icon": post.shape_icon,
+                "svg_path": svg_path,
                 "distance": float(post.distance) if post.distance else 0,
                 "duration": post.duration or 0,
                 "pace": post.pace,
