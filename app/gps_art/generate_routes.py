@@ -231,7 +231,7 @@ def generate_routes(
                 
                 if on_progress and len(tasks) > 0:
                     percent = 10 + int(70 * done / len(tasks))
-                    if percent - last_reported_percent >= 10:
+                    if percent - last_reported_percent >= 5:
                         last_reported_percent = percent
                         on_progress(min(percent, 80), "processing")
 
