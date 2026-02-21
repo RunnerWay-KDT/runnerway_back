@@ -12,6 +12,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
 import logging, time
+from datetime import timezone
 
 from app.db.database import get_db, SessionLocal
 from app.api.deps import get_current_user
@@ -172,10 +173,28 @@ async def generate_route_background(task_id: str, db: Session):
         task.started_at = datetime.utcnow()
         db.commit()
         
-        # TODO: 실제 경로 생성 로직 구현
-        # 현재는 모의 데이터로 처리
-        
-        # Route 생성
+        body = getattr(task, "request_data", None)
+        if isinstance(body, dict) and (body.get("shape_id") or body.get("route_id") or body.get("svg_path")):
+            try:
+                result = generate_gps_art_impl(
+                    body=body,
+                    user_id=task.user_id,
+                    db=d,
+                    on_progress=None,
+                )
+                task.status = "completed"
+                task.route_id = result["route_id"]
+                task.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+            except Exception as e:
+                task.status = "failed"
+                task.error_message = str(e)[:500]
+                task.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                return
+
+        # 폴백: request_data가 없거나 GPS 아트 형식이 아닐 때만 모의 데이터
         route = Route(
             user_id=task.user_id,
             shape_id=task.shape_id,
@@ -186,27 +205,22 @@ async def generate_route_background(task_id: str, db: Session):
         )
         db.add(route)
         db.commit()
-        
-        # RouteOption 3개 생성 (모의 데이터)
+
         for i, option_type in enumerate(["balanced", "safety", "scenic"]):
             option = RouteOption(
                 route_id=route.id,
                 option_type=option_type,
-                distance=task.target_distance + (i * 0.1),  # 약간씩 다른 거리
-                estimated_time=int(task.target_distance * 10),  # 분 단위
+                distance=task.target_distance + (i * 0.1),
+                estimated_time=int(task.target_distance * 10),
                 safety_score=0,
-                elevation_gain=50 + (i * 10),  # 고도 상승
-                path_data={
-                    "coordinates": [],  # TODO: 실제 좌표 데이터
-                    "waypoints": []
-                }
+                elevation_gain=50 + (i * 10),
+                path_data={"coordinates": [], "waypoints": []}
             )
             db.add(option)
-        
-        # Task 완료 상태 업데이트
+
         task.status = "completed"
         task.route_id = route.id
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(timezone.utc)
         db.commit()
         
     except Exception as e:
@@ -1312,7 +1326,7 @@ def _generate_gps_art_background(task_id: str):
             if t.estimated_remaining is not None and t.estimated_remaining > 0:
                 # 아주 단순한 예: 남은 퍼센트 기반 추정
                 t.estimated_remaining = max(1, int(t.estimated_remaining * (100 - percent) / 100))
-            if percent - _last_commit_percent[0] >= 5 or percent >= 99:
+            if percent - _last_commit_percent[0] >= 10 or percent >= 99:
                 db.commit()
                 _last_commit_percent[0] = percent
 

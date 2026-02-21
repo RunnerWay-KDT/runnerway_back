@@ -225,7 +225,7 @@ def generate_gps_art_impl(
             option_number=i + 1,
             name=option_names[i],
             distance=distance_km,
-            estimated_time=max(1, int(round(distance_km * 5))),
+            estimated_time=max(1, int(round(distance_km * 12))),
             difficulty=difficulty,
             tag=tags[i],
             coordinates=coords,

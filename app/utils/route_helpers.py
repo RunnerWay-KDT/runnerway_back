@@ -206,10 +206,10 @@ def calculate_gps_art_metrics(G: nx.Graph, path: list) -> dict:
     max_elev_diff = (max(elevations) - min(elevations)) if elevations else 0
 
     # 3. 난이도 자동 판별 (그림 경로는 이름이 없으므로 경사도 기준)
-    # 3% 미만: 쉬움 / 3%~7%: 보통 / 7% 이상: 도전
-    if avg_grade < 3.0:
+    # 5% 미만: 쉬움 / 5%~10%: 보통 / 10% 이상: 도전
+    if avg_grade < 6.0:
         difficulty = "쉬움"
-    elif avg_grade < 7.0:
+    elif avg_grade < 10.0:
         difficulty = "보통"
     else:
         difficulty = "도전"
