@@ -205,7 +205,7 @@ def generate_gps_art_impl(
         # 고도 변화가 크면 한 단계 상향 (선택)
         if total_elevation_change >= 200 and base == "쉬움":
             return "보통"
-        if total_elevation_change >= 350 and base == "보통":
+        if total_elevation_change >= 400 and base == "보통":
             return "도전"
         return base
 
