@@ -179,7 +179,7 @@ async def generate_route_background(task_id: str, db: Session):
                 result = generate_gps_art_impl(
                     body=body,
                     user_id=task.user_id,
-                    db=d,
+                    db=db,
                     on_progress=None,
                 )
                 task.status = "completed"
