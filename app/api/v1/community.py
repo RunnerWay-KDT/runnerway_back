@@ -7,8 +7,8 @@
 
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, Path, status, UploadFile, File, Form
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy.orm import Session, joinedload, subqueryload
+from sqlalchemy import func, or_, literal, case
 from datetime import datetime
 
 from app.db.database import get_db
@@ -57,75 +57,111 @@ def get_feed(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db)
 ):
-    """피드 조회 엔드포인트"""
+    """피드 조회 엔드포인트 (최적화: N+1 쿼리 제거, 배치 조회)"""
+    
+    from datetime import timedelta
     
     # 기본 쿼리 - 삭제되지 않은 공개 게시글
-    query = db.query(Post).filter(
-        Post.deleted_at.is_(None),
-        Post.visibility == "public"
+    base_filter = [Post.deleted_at.is_(None), Post.visibility == "public"]
+    
+    # 정렬 조건 설정
+    if sort == "popular":
+        order_clauses = [Post.like_count.desc(), Post.created_at.desc()]
+    elif sort == "trending":
+        yesterday = datetime.utcnow() - timedelta(days=1)
+        base_filter.append(Post.created_at >= yesterday)
+        order_clauses = [Post.like_count.desc()]
+    else:  # latest
+        order_clauses = [Post.created_at.desc()]
+    
+    # 전체 개수 (경량 count 쿼리)
+    total_count = db.query(func.count(Post.id)).filter(*base_filter).scalar()
+    
+    # 페이지네이션 + eager loading (작성자 JOIN)
+    offset = (page - 1) * limit
+    posts = (
+        db.query(Post)
+        .filter(*base_filter)
+        .order_by(*order_clauses)
+        .options(joinedload(Post.author))
+        .offset(offset)
+        .limit(limit)
+        .all()
     )
     
-    # 정렬
-    if sort == "popular":
-        query = query.order_by(Post.like_count.desc(), Post.created_at.desc())
-    elif sort == "trending":
-        # 최근 24시간 내 좋아요 많은 순
-        from datetime import timedelta
-        yesterday = datetime.utcnow() - timedelta(days=1)
-        query = query.filter(Post.created_at >= yesterday).order_by(
-            Post.like_count.desc()
+    if not posts:
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return {
+            "success": True,
+            "data": {
+                "posts": [],
+                "pagination": {
+                    "current_page": page,
+                    "total_pages": total_pages,
+                    "total_count": total_count,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1
+                }
+            },
+            "message": "피드 조회 성공"
+        }
+    
+    post_ids = [p.id for p in posts]
+    
+    # ── 배치 쿼리: 좋아요/북마크 여부를 한 번에 조회 ──
+    liked_ids = set()
+    bookmarked_ids = set()
+    if current_user:
+        liked_ids = set(
+            row[0] for row in db.query(PostLike.post_id).filter(
+                PostLike.post_id.in_(post_ids),
+                PostLike.user_id == current_user.id
+            ).all()
         )
-    else:  # latest
-        query = query.order_by(Post.created_at.desc())
+        bookmarked_ids = set(
+            row[0] for row in db.query(PostBookmark.post_id).filter(
+                PostBookmark.post_id.in_(post_ids),
+                PostBookmark.user_id == current_user.id
+            ).all()
+        )
     
-    # 전체 개수
-    total_count = query.count()
+    # ── 배치 쿼리: workout 정보를 한 번에 조회 ──
+    workout_ids = [p.workout_id for p in posts if p.workout_id]
+    workout_map = {}
+    route_ids_needed = []
+    if workout_ids:
+        workouts = db.query(Workout).filter(Workout.id.in_(workout_ids)).all()
+        for w in workouts:
+            workout_map[w.id] = w
+            if w.route_id:
+                route_ids_needed.append(w.route_id)
     
-    # 페이지네이션
-    offset = (page - 1) * limit
-    posts = query.options(
-        joinedload(Post.author)
-    ).offset(offset).limit(limit).all()
+    # ── 배치 쿼리: route svg_path를 한 번에 조회 ──
+    route_map = {}
+    if route_ids_needed:
+        routes = db.query(Route.id, Route.svg_path).filter(
+            Route.id.in_(route_ids_needed),
+            Route.svg_path.isnot(None)
+        ).all()
+        route_map = {r.id: r.svg_path for r in routes}
     
-    # 응답 데이터 변환
+    # ── 응답 데이터 조립 (추가 쿼리 없음) ──
     post_list = []
     for post in posts:
-        # 현재 사용자의 좋아요/북마크 여부
-        is_liked = False
-        is_bookmarked = False
-        
-        if current_user:
-            is_liked = db.query(PostLike).filter(
-                PostLike.post_id == post.id,
-                PostLike.user_id == current_user.id
-            ).first() is not None
-            
-            is_bookmarked = db.query(PostBookmark).filter(
-                PostBookmark.post_id == post.id,
-                PostBookmark.user_id == current_user.id
-            ).first() is not None
-        
-        # 연결된 workout에서 actual_path, 시작 좌표 조회
+        svg_path = post.svg_path
         actual_path = None
         start_lat = None
         start_lng = None
-        # svg_path: Post에 저장된 값 우선, 없으면 workout→route fallback
-        svg_path = post.svg_path
-        if post.workout_id:
-            workout = db.query(Workout).filter(
-                Workout.id == post.workout_id
-            ).first()
-            if workout:
-                actual_path = workout.actual_path
-                start_lat = float(workout.start_latitude) if workout.start_latitude else None
-                start_lng = float(workout.start_longitude) if workout.start_longitude else None
-                # Post에 svg_path가 없으면 연결된 route에서 조회
-                if not svg_path and workout.route_id:
-                    route = db.query(Route).filter(Route.id == workout.route_id).first()
-                    if route and route.svg_path:
-                        svg_path = route.svg_path
         
-        post_data = {
+        if post.workout_id and post.workout_id in workout_map:
+            workout = workout_map[post.workout_id]
+            actual_path = workout.actual_path
+            start_lat = float(workout.start_latitude) if workout.start_latitude else None
+            start_lng = float(workout.start_longitude) if workout.start_longitude else None
+            if not svg_path and workout.route_id and workout.route_id in route_map:
+                svg_path = route_map[workout.route_id]
+        
+        post_list.append({
             "id": post.id,
             "author": {
                 "id": post.author.id if post.author else None,
@@ -146,14 +182,13 @@ def get_feed(
             "like_count": post.like_count or 0,
             "comment_count": post.comment_count or 0,
             "bookmark_count": post.bookmark_count or 0,
-            "is_liked": is_liked,
-            "is_bookmarked": is_bookmarked,
+            "is_liked": post.id in liked_ids,
+            "is_bookmarked": post.id in bookmarked_ids,
             "actual_path": actual_path,
             "start_latitude": start_lat,
             "start_longitude": start_lng,
             "created_at": post.created_at.isoformat()
-        }
-        post_list.append(post_data)
+        })
     
     # 페이지네이션 정보
     total_pages = (total_count + limit - 1) // limit
