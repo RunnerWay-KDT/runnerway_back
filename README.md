@@ -1,253 +1,143 @@
 # 러너웨이 백엔드 (RunnerWay Backend)
 
-> 🏃‍♂️ 러너웨이 - 나만의 그림 경로로 러닝을 시작하세요!
+원하는 도형 모양으로 러닝 경로를 만들어주는 앱 **러너웨이**의 백엔드 서버입니다.
 
-## 📁 프로젝트 구조
+사용자가 하트, 별 같은 도형을 선택하면 실제 도로 위에 해당 모양의 러닝 코스를 생성해주고, GPS로 운동을 추적하고, 결과를 커뮤니티에 공유할 수 있습니다.
+
+## 기술 스택
+
+- **Python 3.12+** / **FastAPI**
+- **SQLAlchemy 2.0** + **MariaDB**
+- **JWT** 인증 (카카오 소셜 로그인 지원)
+- **OSMnx** + **NetworkX** — OpenStreetMap 도로 네트워크 기반 경로 생성
+- **OpenCV** — SVG 경로 단순화 (Douglas-Peucker)
+
+## 프로젝트 구조
 
 ```
-runnerway_back/
-│
-├── app/                          # 메인 애플리케이션 폴더
-│   ├── __init__.py              # 패키지 초기화 파일
-│   ├── main.py                  # FastAPI 앱 시작점 (가장 먼저 보세요!)
-│   ├── config.py                # 환경 설정 (DB 연결, API 키 등)
-│   │
-│   ├── api/                     # API 엔드포인트 모음
-│   │   ├── __init__.py
-│   │   ├── v1/                  # API 버전 1
-│   │   │   ├── __init__.py
-│   │   │   ├── router.py        # 모든 라우터를 모아놓은 파일
-│   │   │   ├── auth.py          # 인증 관련 API (회원가입, 로그인)
-│   │   │   ├── users.py         # 사용자 관련 API
-│   │   │   ├── routes.py        # 경로 생성 관련 API
-│   │   │   ├── workouts.py      # 운동 관련 API
-│   │   │   └── community.py     # 커뮤니티 관련 API
-│   │   └── deps.py              # API 의존성 (인증 체크 등)
-│   │
-│   ├── core/                    # 핵심 기능 모음
-│   │   ├── __init__.py
-│   │   ├── security.py          # 보안 관련 (JWT 토큰, 비밀번호 해싱)
-│   │   └── exceptions.py        # 커스텀 예외 처리
-│   │
-│   ├── models/                  # 데이터베이스 모델 (테이블 정의)
-│   │   ├── __init__.py
-│   │   ├── user.py              # 사용자 관련 테이블
-│   │   ├── route.py             # 경로 관련 테이블
-│   │   ├── workout.py           # 운동 관련 테이블
-│   │   └── community.py         # 커뮤니티 관련 테이블
-│   │
-│   ├── schemas/                 # Pydantic 스키마 (요청/응답 형식 정의)
-│   │   ├── __init__.py
-│   │   ├── auth.py              # 인증 관련 스키마
-│   │   ├── user.py              # 사용자 관련 스키마
-│   │   ├── route.py             # 경로 관련 스키마
-│   │   ├── workout.py           # 운동 관련 스키마
-│   │   ├── community.py         # 커뮤니티 관련 스키마
-│   │   └── common.py            # 공통 스키마
-│   │
-│   ├── services/                # 비즈니스 로직 (실제 기능 구현)
-│   │   ├── __init__.py
-│   │   ├── auth_service.py      # 인증 서비스
-│   │   ├── route_service.py     # 경로 서비스
-│   │   ├── workout_service.py   # 운동 서비스
-│   │   ├── community_service.py # 커뮤니티 서비스
-│   │   └── kakao_service.py     # 카카오 맵 API 서비스
-│   │
-│   └── db/                      # 데이터베이스 관련
-│       ├── __init__.py
-│       └── database.py          # DB 연결 설정
-│
-├── scripts/                     # 유틸리티 스크립트
-│   └── check_db.py             # DB 연결 테스트
-│
-├── requirements.txt             # 필요한 패키지 목록
-├── .env.example                 # 환경 변수 예시 파일
-└── README.md                    # 이 파일!
+app/
+├── main.py              # FastAPI 앱 진입점
+├── config.py            # 환경 설정 (.env 기반)
+├── api/v1/              # API 엔드포인트
+│   ├── auth.py          # 회원가입, 로그인, 토큰 갱신
+│   ├── users.py         # 프로필, 통계, 설정
+│   ├── routes.py        # 경로 생성 / 저장 / 조회
+│   ├── workouts.py      # 운동 시작 / 완료 / 기록
+│   └── community.py     # 피드, 좋아요, 댓글, 북마크
+├── models/              # DB 테이블 정의 (SQLAlchemy)
+├── schemas/             # 요청/응답 스키마 (Pydantic)
+├── services/            # 비즈니스 로직
+├── core/                # JWT, 비밀번호 해싱, 예외 처리
+├── db/                  # DB 연결 설정
+├── gps_art/             # GPS 아트 경로 생성 엔진
+└── utils/               # 기하 계산, SVG 처리 등 유틸
 ```
 
-## 🚀 시작하기
+## 주요 기능
 
-### 1. 가상환경 생성 및 활성화
+### 경로 생성 (GPS Art)
 
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
+도형 템플릿이나 직접 그린 SVG를 기반으로 실제 도로 위 러닝 경로를 생성합니다. OSMnx로 주변 도로 네트워크를 가져오고, A\* 알고리즘으로 도형과 유사한 경로를 탐색합니다. 비동기로 처리되어 task_id로 결과를 폴링합니다.
 
-# Mac/Linux
-python3 -m venv venv
-source venv/bin/activate
-```
+### 운동 추적
 
-### 2. 패키지 설치
+운동 시작 → 실시간 GPS 기록 → 완료 흐름을 지원합니다. km 단위 구간(split) 기록, 페이스/칼로리/고도 등 통계를 저장합니다.
+
+### 커뮤니티
+
+운동 결과를 게시글로 공유하고 좋아요, 댓글, 북마크 기능을 제공합니다. 최신순/인기순/트렌딩 정렬을 지원합니다.
+
+### 인증
+
+이메일/비밀번호 회원가입과 카카오 소셜 로그인을 지원합니다. JWT Access Token + Refresh Token 방식입니다.
+
+## 시작하기
+
+### 1. 패키지 설치
 
 ```bash
 pip install -r requirements.txt
 ```
 
+### 2. 환경 변수 설정
+
+`.env` 파일을 프로젝트 루트에 생성합니다.
+
+```env
+SECRET_KEY=your-secret-key
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=runnerway
+DB_USER=root
+DB_PASSWORD=your-password
+KAKAO_CLIENT_ID=your-kakao-key
+```
+
 ### 3. 서버 실행
 
 ```bash
-# 개발 모드 (코드 변경 시 자동 재시작)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 4. API 문서 확인
+실행 후 [http://localhost:8000/docs](http://localhost:8000/docs)에서 Swagger API 문서를 확인할 수 있습니다.
 
-서버 실행 후 브라우저에서:
+## API 엔드포인트
 
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+### 인증 `/api/v1/auth`
 
-## 📚 신입 개발자를 위한 학습 순서
+| 메서드 | 경로       | 설명             |
+| ------ | ---------- | ---------------- |
+| POST   | `/signup`  | 회원가입         |
+| POST   | `/login`   | 이메일 로그인    |
+| POST   | `/refresh` | 액세스 토큰 갱신 |
+| POST   | `/logout`  | 로그아웃         |
 
-1. **`app/main.py`** - FastAPI 앱이 어떻게 시작되는지 확인
-2. **`app/config.py`** - 환경 설정이 어떻게 관리되는지 확인
-3. **`app/models/`** - 데이터베이스 테이블 구조 이해
-4. **`app/schemas/`** - API 요청/응답 형식 이해
-5. **`app/api/v1/`** - 실제 API 엔드포인트 확인
-6. **`app/services/`** - 비즈니스 로직 이해
+### 사용자 `/api/v1/users`
 
-## 🔑 주요 기능
+| 메서드 | 경로               | 설명              |
+| ------ | ------------------ | ----------------- |
+| GET    | `/me`              | 내 프로필 조회    |
+| PATCH  | `/me`              | 프로필 수정       |
+| DELETE | `/me`              | 회원 탈퇴         |
+| GET    | `/me/workouts`     | 내 운동 기록 목록 |
+| GET    | `/me/saved-routes` | 저장한 경로 목록  |
+| GET    | `/me/settings`     | 앱 설정 조회      |
+| PATCH  | `/me/settings`     | 앱 설정 수정      |
 
-### 인증 API (`/api/v1/auth`)
+### 경로 `/api/v1/routes`
 
-- `POST /signup` - 회원가입 (이메일/비밀번호)
-- `POST /login` - 로그인
-- `POST /refresh` - 액세스 토큰 갱신
-- `POST /logout` - 로그아웃
+| 메서드 | 경로                              | 설명                    |
+| ------ | --------------------------------- | ----------------------- |
+| POST   | `/generate`                       | 경로 생성 요청 (비동기) |
+| GET    | `/generate/{task_id}`             | 경로 생성 상태 조회     |
+| GET    | `/{route_id}/options`             | 경로 옵션 목록 조회     |
+| GET    | `/{route_id}/options/{option_id}` | 경로 옵션 상세 조회     |
+| PATCH  | `/{route_id}/name`                | 경로 이름 수정          |
+| POST   | `/{route_id}/save`                | 경로 저장 (북마크)      |
+| DELETE | `/{route_id}/save`                | 경로 저장 취소          |
+| GET    | `/shapes`                         | 도형 템플릿 목록        |
 
-### 사용자 API (`/api/v1/users`)
+### 운동 `/api/v1/workouts`
 
-- `GET /me` - 내 프로필 조회
-- `PATCH /me` - 프로필 수정
-- `DELETE /me` - 회원 탈퇴
-- `GET /me/workouts` - 내 운동 기록 목록
-- `GET /me/saved-routes` - 저장한 경로 목록
+| 메서드 | 경로                     | 설명                |
+| ------ | ------------------------ | ------------------- |
+| POST   | `/start`                 | 운동 시작           |
+| POST   | `/{workout_id}/complete` | 운동 완료           |
+| POST   | `/{workout_id}/pause`    | 운동 일시정지       |
+| POST   | `/{workout_id}/resume`   | 운동 재개           |
+| GET    | `/{workout_id}`          | 운동 상세 조회      |
+| DELETE | `/{workout_id}`          | 운동 취소           |
+| DELETE | `/{workout_id}/record`   | 운동 기록 삭제      |
+| GET    | `/current/status`        | 현재 진행 중인 운동 |
 
-### 경로 API (`/api/v1/routes`)
+### 커뮤니티 `/api/v1/community`
 
-- `POST /generate` - 경로 생성 요청 (비동기)
-- `GET /generate/{task_id}` - 경로 생성 상태 조회
-- `GET /{route_id}/options` - 경로 옵션 목록 조회 (3개)
-- `GET /{route_id}/options/{option_id}` - 옵션 상세 조회
-- `POST /{route_id}/save` - 경로 저장
-- `DELETE /saved-routes/{saved_route_id}` - 저장 취소
-- `GET /shapes` - 모양 템플릿 목록
-
-### 운동 API (`/api/v1/workouts`)
-
-- `POST /start` - 운동 시작
-- `POST /{id}/track` - 실시간 위치 트래킹
-- `POST /{id}/pause` - 일시정지
-- `POST /{id}/resume` - 재개
-- `POST /{id}/complete` - 운동 완료
-- `DELETE /{id}` - 운동 취소
-- `GET /{id}` - 운동 상세 조회
-- `GET /current/status` - 현재 진행 중인 운동 확인
-
-### 커뮤니티 API (`/api/v1/community`)
-
-- `GET /feed` - 피드 조회 (최신순/인기순/트렌딩)
-- `POST /posts` - 게시글 작성
-- `GET /posts/{id}` - 게시글 상세 조회
-- `PATCH /posts/{id}` - 게시글 수정
-- `DELETE /posts/{id}` - 게시글 삭제
-- `POST /posts/{id}/like` - 좋아요
-- `DELETE /posts/{id}/like` - 좋아요 취소
-- `POST /posts/{id}/bookmark` - 북마크
-- `DELETE /posts/{id}/bookmark` - 북마크 취소
-- `POST /posts/{id}/comments` - 댓글 작성
-- `DELETE /comments/{id}` - 댓글 삭제
-- `POST /comments/{id}/like` - 댓글 좋아요
-- `GET /bookmarks` - 내 북마크 목록
-
-## 🗄️ 데이터베이스
-
-- **DBMS**: MariaDB
-- **ORM**: SQLAlchemy 2.0
-- **마이그레이션**: 수동 관리 (Alembic 추후 도입 예정)
-
-### 주요 테이블
-
-**사용자 관련:**
-
-- `users` - 사용자 기본 정보 (이메일, 이름, 프로필 이미지 등)
-- `user_stats` - 사용자 통계 (총 거리, 운동 횟수, 완주 경로 수)
-- `user_settings` - 사용자 설정 (다크모드, 자동랩 등)
-- `emergency_contacts` - 긴급 연락처
-- `refresh_tokens` - JWT 리프레시 토큰
-
-**경로 관련:**
-
-- `route_shapes` - 모양 템플릿 (하트, 별, 원 등)
-- `routes` - 생성된 경로
-- `route_options` - 경로 옵션 (안전 우선, 균형, 경치 우선 등 3가지)
-- `saved_routes` - 사용자가 저장한 경로
-- `route_generation_tasks` - 경로 생성 비동기 작업
-- `places` - 주변 장소 정보
-- `recommended_routes` - 추천 경로
-
-**운동 관련:**
-
-- `workouts` - 운동 기록 (거리, 시간, 칼로리, 경로 데이터 등)
-- `workout_splits` - 구간별 기록 (1km, 2km, ...)
-
-- 각 파일 상단에 파일 설명 주석 작성
-
-## 🔧 개발 시 참고사항
-
-### 새로운 API 추가 시
-
-1. `schemas/`에 요청/응답 스키마 정의
-2. `models/`에 필요한 모델 추가
-3. `services/`에 비즈니스 로직 구현
-4. `api/v1/`에 엔드포인트 추가
-5. `api/v1/router.py`에 라우터 등록
-
-### 환경 변수 추가 시
-
-1. `.env.example`에 예시 추가
-2. `config.py`에 설정 클래스 수정
-3. README에 설명 추가
-
-## 🚨 주요 변경사항 (v2.0)
-
-- ✅ 이메일/비밀번호 로그인만 지원 (카카오 소셜 로그인 제거)
-- ✅ 뱃지/업적 시스템 제거
-- ✅ 팔로우 기능 제거
-- ✅ 운동 트래킹 데이터를 `workouts.path_data` JSON 필드로 통합
-- ✅ 경유지(waypoints) 테이블 제거
-- ✅ 필드명 변경: `avatar` → `avatar_url`, `svg_template` → `svg_url`
-- ✅ UserStats 간소화: `total_calories`, `total_duration` 제거
-
-## 🐛 디버깅
-
-### DB 연결 테스트
-
-```bash
-python scripts/check_db.py
-```
-
-### 로그 확인
-
-```bash
-# 앱 로그는 콘솔에 출력됨
-# 필요시 파일 로깅 추가 가능
-```
-
-### 새로운 API 추가 시
-
-1. `schemas/`에 요청/응답 스키마 정의
-2. `models/`에 필요한 모델 추가
-3. `services/`에 비즈니스 로직 구현
-4. `api/v1/`에 엔드포인트 추가
-5. `api/v1/router.py`에 라우터 등록
-
-### 환경 변수 추가 시
-
-1. `.env.example`에 예시 추가
-2. `config.py`에 설정 클래스 수정
-3. README에 설명 추가
-
----
+| 메서드 | 경로                    | 설명             |
+| ------ | ----------------------- | ---------------- |
+| GET    | `/feed`                 | 피드 조회        |
+| POST   | `/posts`                | 게시글 작성      |
+| GET    | `/posts/{post_id}`      | 게시글 상세 조회 |
+| PATCH  | `/posts/{post_id}`      | 게시글 수정      |
+| DELETE | `/posts/{post_id}`      | 게시글 삭제      |
+| POST   | `/posts/{post_id}/like` | 좋아요           |
+| DELETE | `/posts/{post_id}/like` | 좋아요 취소      |
